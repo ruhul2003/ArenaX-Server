@@ -48,10 +48,38 @@ const run = async () => {
 run().catch(console.dir);
 
 // ====================== REST API ENDPOINTS ======================
+
+// GET /facilities - Supports optional search and sport type filtering
 app.get("/facilities", async (req, res) => {
   try {
     if (!facilitiesCollection) return res.status(503).json({ message: "Database warming up..." });
-    const cursor = await facilitiesCollection.find().toArray();
+    
+    const { search, sportType } = req.query;
+    let query = {};
+
+    // 1. Search by name or location using case-insensitive $regex
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: "i" } },
+        { location: { $regex: search, $options: "i" } }
+      ];
+    }
+
+    // 2. Filter by sport types using the $in operator
+    if (sportType) {
+      // Splits incoming comma-separated string 'Football,Cricket' into ['Football', 'Cricket']
+      const sportsArray = sportType.split(",");
+      
+      // Prevent overwriting the $or array if it was already created by the search step
+      query.$or = query.$or || [];
+      query.$or.push(
+        { sportType: { $in: sportsArray } },
+        { facility_type: { $in: sportsArray } } // Fallback field check
+      );
+    }
+
+    // Fetch documents matching the dynamically constructed query criteria
+    const cursor = await facilitiesCollection.find(query).toArray();
     res.send(cursor);
   } catch (err) {
     res.status(500).send(err.message);
