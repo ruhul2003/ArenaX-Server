@@ -10,10 +10,24 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 // ====================== MIDDLEWARES ======================
+// Allowed origins list: Includes your local testing environment and your live client site
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://arenax-cyan.vercel.app"
+];
+
 app.use(
   cors({
-    origin: "http://localhost:3000", 
-    credentials: true,               
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.indexOf(origin) !== -1) {
+        return callback(null, true);
+      } else {
+        return callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true, // Crucial for passing JWT auth cookies between different domains
   })
 );
 app.use(express.json());
@@ -34,13 +48,13 @@ let bookingCollection;
 
 const run = async () => {
   try {
-    await client.connect();
+    // await client.connect();
     const db = client.db("ArenaX");
     
     facilitiesCollection = db.collection("Facilities");
     bookingCollection = db.collection("Bookings");
 
-    console.log("✅ Connected to MongoDB - ArenaX Database");
+    console.log(" Connected to MongoDB - ArenaX Database");
   } catch (error) {
     console.error("MongoDB Connection Error:", error);
   }
@@ -81,9 +95,9 @@ app.post("/auth/login", async (req, res) => {
     const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "1d" });
 
     res.cookie("token", token, {
-      httpOnly: true,                                
-      secure: process.env.NODE_ENV === "production", 
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax", 
+      httpOnly: true,                                  
+      secure: true, // Must be true on production for cross-site cookie assignment
+      sameSite: "none", // Must be "none" to share cookies between different domains (.vercel.app)
       maxAge: 24 * 60 * 60 * 1000,                
     });
 
@@ -96,8 +110,8 @@ app.post("/auth/login", async (req, res) => {
 app.post("/auth/logout", async (req, res) => {
   res.clearCookie("token", {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    secure: true,
+    sameSite: "none",
   });
   res.send({ success: true, message: "Logged out cleanly." });
 });
@@ -135,7 +149,6 @@ app.get("/facilities", async (req, res) => {
 app.get("/bookings", verifyToken, async (req, res) => {
   try {
     if (!bookingCollection) return res.status(503).json({ message: "Database warming up..." });
-    
     
     const result = await bookingCollection.find(req.query).toArray();
     res.send(result);
