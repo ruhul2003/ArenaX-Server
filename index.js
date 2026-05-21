@@ -1,5 +1,7 @@
 const express = require("express");
 const cors = require("cors");
+const jwt = require("jsonwebtoken");
+const cookieParser = require("cookie-parser");
 const { MongoClient, ServerApiVersion } = require("mongodb");
 
 require("dotenv").config();
@@ -7,15 +9,15 @@ require("dotenv").config();
 const app = express();
 const port = process.env.PORT || 5000;
 
+// ====================== MIDDLEWARES ======================
 app.use(
   cors({
-    origin: "http://localhost:3000",
-    credentials: true, 
+    origin: "http://localhost:3000", 
+    credentials: true,               
   })
 );
 app.use(express.json());
-
-// 💡 Removed Better Auth code block and req.url replacement hacks from here!
+app.use(cookieParser()); 
 
 const uri = `mongodb+srv://${process.env.MONGODB_USER}:${process.env.MONGODB_PASS}@tilux-server.cltfmst.mongodb.net/?appName=Tilux-server`;
 
@@ -39,17 +41,67 @@ const run = async () => {
     bookingCollection = db.collection("Bookings");
 
     console.log("✅ Connected to MongoDB - ArenaX Database");
-    await client.db("admin").command({ ping: 1 });
-
   } catch (error) {
     console.error("MongoDB Connection Error:", error);
   }
 };
 run().catch(console.dir);
 
+
+// ====================== AUTH MIDDLEWARE (Token Verification) ======================
+const verifyToken = (req, res, next) => {
+  const token = req.cookies?.token; 
+
+  if (!token) {
+    return res.status(401).json({ message: "Access Denied: No token provided. Please log in." });
+  }
+
+  try {
+    const verified = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = verified; 
+    next(); 
+  } catch (err) {
+    res.status(403).json({ message: "Invalid or expired token." });
+  }
+};
+
+
 // ====================== REST API ENDPOINTS ======================
 
-// GET /facilities - Supports optional search and sport type filtering
+app.post("/auth/login", async (req, res) => {
+  try {
+    const { email } = req.body; 
+    
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const payload = { email };
+
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "1d" });
+
+    res.cookie("token", token, {
+      httpOnly: true,                                
+      secure: process.env.NODE_ENV === "production", 
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax", 
+      maxAge: 24 * 60 * 60 * 1000,                
+    });
+
+    res.send({ success: true, message: "Authentication cookie set successfully." });
+  } catch (err) {
+    res.status(500).send({ message: err.message });
+  }
+});
+
+app.post("/auth/logout", async (req, res) => {
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+  });
+  res.send({ success: true, message: "Logged out cleanly." });
+});
+
 app.get("/facilities", async (req, res) => {
   try {
     if (!facilitiesCollection) return res.status(503).json({ message: "Database warming up..." });
@@ -57,7 +109,6 @@ app.get("/facilities", async (req, res) => {
     const { search, sportType } = req.query;
     let query = {};
 
-    // 1. Search by name or location using case-insensitive $regex
     if (search) {
       query.$or = [
         { name: { $regex: search, $options: "i" } },
@@ -65,20 +116,15 @@ app.get("/facilities", async (req, res) => {
       ];
     }
 
-    // 2. Filter by sport types using the $in operator
     if (sportType) {
-      // Splits incoming comma-separated string 'Football,Cricket' into ['Football', 'Cricket']
       const sportsArray = sportType.split(",");
-      
-      // Prevent overwriting the $or array if it was already created by the search step
       query.$or = query.$or || [];
       query.$or.push(
         { sportType: { $in: sportsArray } },
-        { facility_type: { $in: sportsArray } } // Fallback field check
+        { facility_type: { $in: sportsArray } }
       );
     }
 
-    // Fetch documents matching the dynamically constructed query criteria
     const cursor = await facilitiesCollection.find(query).toArray();
     res.send(cursor);
   } catch (err) {
@@ -86,9 +132,11 @@ app.get("/facilities", async (req, res) => {
   }
 });
 
-app.get("/bookings", async (req, res) => {
+app.get("/bookings", verifyToken, async (req, res) => {
   try {
     if (!bookingCollection) return res.status(503).json({ message: "Database warming up..." });
+    
+    
     const result = await bookingCollection.find(req.query).toArray();
     res.send(result);
   } catch (err) {
@@ -97,7 +145,7 @@ app.get("/bookings", async (req, res) => {
 });
 
 app.get("/", (req, res) => {
-  res.send("ArenaX Server running cleanly!");
+  res.send("ArenaX Server running cleanly with JWT cookie-auth!");
 });
 
 app.listen(port, () => {
