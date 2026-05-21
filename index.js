@@ -157,6 +157,7 @@ app.get("/bookings", verifyToken, async (req, res) => {
   }
 });
 
+
 app.get("/", (req, res) => {
   res.send("ArenaX Server running cleanly with JWT cookie-auth!");
 });
