@@ -10,16 +10,14 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 // ====================== MIDDLEWARES ======================
-// Allowed origins list: Includes your local testing environment and your live client site
 const allowedOrigins = [
   "http://localhost:3000",
-  "https://arenax-cyan.vercel.app"
+  "https://arenax-cyan.vercel.app" // Your live client site
 ];
 
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
       if (allowedOrigins.indexOf(origin) !== -1) {
         return callback(null, true);
@@ -27,7 +25,7 @@ app.use(
         return callback(new Error("Not allowed by CORS"));
       }
     },
-    credentials: true, // Crucial for passing JWT auth cookies between different domains
+    credentials: true, 
   })
 );
 app.use(express.json());
@@ -43,24 +41,26 @@ const client = new MongoClient(uri, {
   },
 });
 
-let facilitiesCollection;
-let bookingCollection;
-
-const run = async () => {
+let db;
+// Middleware to ensure database connection is alive before handling requests
+const connectDB = async (req, res, next) => {
   try {
-    // await client.connect();
-    const db = client.db("ArenaX");
-    
-    facilitiesCollection = db.collection("Facilities");
-    bookingCollection = db.collection("Bookings");
-
-    console.log(" Connected to MongoDB - ArenaX Database");
+    if (!db) {
+      await client.connect();
+      db = client.db("ArenaX");
+      console.log("Connected to MongoDB - ArenaX Database");
+    }
+    req.facilitiesCollection = db.collection("Facilities");
+    req.bookingCollection = db.collection("Bookings");
+    next();
   } catch (error) {
     console.error("MongoDB Connection Error:", error);
+    res.status(500).json({ message: "Database connection failed" });
   }
 };
-run().catch(console.dir);
 
+// Apply database connection check globally
+app.use(connectDB);
 
 // ====================== AUTH MIDDLEWARE (Token Verification) ======================
 const verifyToken = (req, res, next) => {
@@ -75,13 +75,13 @@ const verifyToken = (req, res, next) => {
     req.user = verified; 
     next(); 
   } catch (err) {
-    res.status(403).json({ message: "Invalid or expired token." });
+    return res.status(403).json({ message: "Invalid or expired token." });
   }
 };
 
-
 // ====================== REST API ENDPOINTS ======================
 
+// --- Authentication ---
 app.post("/auth/login", async (req, res) => {
   try {
     const { email } = req.body; 
@@ -91,13 +91,12 @@ app.post("/auth/login", async (req, res) => {
     }
 
     const payload = { email };
-
     const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "1d" });
 
     res.cookie("token", token, {
-      httpOnly: true,                                  
-      secure: true, // Must be true on production for cross-site cookie assignment
-      sameSite: "none", // Must be "none" to share cookies between different domains (.vercel.app)
+      httpOnly: true,                                     
+      secure: true, // Required on live deployment (HTTPS)
+      sameSite: "none", // Required for cross-domain cookies across different domains
       maxAge: 24 * 60 * 60 * 1000,                
     });
 
@@ -116,10 +115,11 @@ app.post("/auth/logout", async (req, res) => {
   res.send({ success: true, message: "Logged out cleanly." });
 });
 
+// --- Facilities Endpoints ---
+
+// 1. GET All/Filtered Facilities
 app.get("/facilities", async (req, res) => {
   try {
-    if (!facilitiesCollection) return res.status(503).json({ message: "Database warming up..." });
-    
     const { search, sportType } = req.query;
     let query = {};
 
@@ -139,29 +139,51 @@ app.get("/facilities", async (req, res) => {
       );
     }
 
-    const cursor = await facilitiesCollection.find(query).toArray();
+    const cursor = await req.facilitiesCollection.find(query).toArray();
     res.send(cursor);
   } catch (err) {
     res.status(500).send(err.message);
   }
 });
 
+// 2. POST Add New Facility (Protected Route)
+app.post("/facilities", verifyToken, async (req, res) => {
+  try {
+    const newFacility = req.body;
+
+    // Server-side validation check
+    if (!newFacility.name || !newFacility.location || !newFacility.price_per_hour) {
+      return res.status(400).json({ message: "Missing required fields: Name, Location, or Price." });
+    }
+
+    const result = await req.facilitiesCollection.insertOne(newFacility);
+    res.status(201).json({ success: true, insertedId: result.insertedId });
+  } catch (err) {
+    console.error("Error creating facility:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// --- Bookings Endpoints ---
 app.get("/bookings", verifyToken, async (req, res) => {
   try {
-    if (!bookingCollection) return res.status(503).json({ message: "Database warming up..." });
-    
-    const result = await bookingCollection.find(req.query).toArray();
+    const result = await req.bookingCollection.find(req.query).toArray();
     res.send(result);
   } catch (err) {
     res.status(500).send(err.message);
   }
 });
 
-
+// --- Base Test Route ---
 app.get("/", (req, res) => {
   res.send("ArenaX Server running cleanly with JWT cookie-auth!");
 });
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-});
+// For local testing, we still bind the port
+if (process.env.NODE_ENV !== "production") {
+  app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+  });
+}
+
+module.exports = app;
