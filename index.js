@@ -10,9 +10,9 @@ const app = express();
 const port = process.env.PORT || 5000;
 const jwtSecret = process.env.JWT_SECRET || 'your_fallback_secret_key_123';
 
-// ==========================================
-// ⚙️ MIDDLEWARES
-// ==========================================
+
+// MIDDLEWARES
+
 const allowedOrigins = [
     'http://localhost:3000',
     'https://arenax-cyan.vercel.app'
@@ -32,9 +32,9 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser());
 
-// ==========================================
-// 🍃 MONGODB CONNECTION
-// ==========================================
+
+//  MONGODB CONNECTION
+
 const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri, {
     serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true }
@@ -50,31 +50,31 @@ async function startServer() {
         usersCollection = db.collection("Users");
         bookingsCollection = db.collection("Bookings");
         
-        console.log("🎯 Connected to MongoDB.");
-        app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
+        console.log("Connected to MongoDB.");
+        app.listen(port, () => console.log(`Server running on port ${port}`));
     } catch (err) {
-        console.error("❌ MongoDB connection failed:", err);
+        console.error("MongoDB connection failed:", err);
         process.exit(1);
     }
 }
 
-// ==========================================
-// 🔐 REUSABLE AUTH MIDDLEWARE
-// ==========================================
+
+// REUSABLE AUTH MIDDLEWARE
+
 const verifyToken = (req, res, next) => {
     const token = req.cookies.token;
     if (!token) return res.status(401).json({ message: "Access denied. Please log in first." });
 
     jwt.verify(token, jwtSecret, (err, decoded) => {
         if (err) return res.status(403).json({ message: "Session expired. Please log in again." });
-        req.user = decoded; // Contains id and email
+        req.user = decoded; 
         next();
     });
 };
 
-// ==========================================
-// 🔐 AUTH ROUTES (Credential Sign-In & Sign-Up)
-// ==========================================
+
+// AUTH ROUTES (Credential Sign-In & Sign-Up)
+
 
 app.post('/api/auth/login', async (req, res) => {
     try {
@@ -127,11 +127,11 @@ app.post('/api/auth/signup', async (req, res) => {
     }
 });
 
-// ==========================================
-// 🌐 NATIVE MANUAL GOOGLE OAUTH PIPELINE
-// ==========================================
 
-// Route 1: Direct user redirect string generation endpoint
+// 🌐 NATIVE MANUAL GOOGLE OAUTH PIPELINE
+
+
+
 app.get('/api/auth/google', (req, res) => {
     const rootUrl = 'https://accounts.google.com/o/oauth2/v2/auth';
     
@@ -151,7 +151,6 @@ app.get('/api/auth/google', (req, res) => {
     res.redirect(`${rootUrl}?${queryString}`);
 });
 
-// Route 2: Receiving callback exchange handler
 app.get('/api/auth/google/callback', async (req, res) => {
     const { code } = req.query;
     
@@ -160,7 +159,6 @@ app.get('/api/auth/google/callback', async (req, res) => {
     }
 
     try {
-        // 1. Exchange authorization code for access tokens
         const tokenUrl = 'https://oauth2.googleapis.com/token';
         const tokenValues = {
             code,
@@ -183,7 +181,6 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
         const { id_token, access_token } = tokenData;
 
-        // 2. Query Google APIs using access token to retrieve profile details
         const profileResponse = await fetch(`https://www.googleapis.com/oauth2/v1/userinfo?alt=json&access_token=${access_token}`, {
             headers: { Authorization: `Bearer ${id_token}` }
         });
@@ -191,7 +188,6 @@ app.get('/api/auth/google/callback', async (req, res) => {
         const profile = await profileResponse.json();
         const emailAddress = profile.email.toLowerCase().trim();
 
-        // 3. Look up or Upsert user entity document inside MongoDB context
         let user = await usersCollection.findOne({ email: emailAddress });
 
         if (!user) {
@@ -206,7 +202,6 @@ app.get('/api/auth/google/callback', async (req, res) => {
             user = { _id: result.insertedId, ...newUser };
         }
 
-        // 4. Issue native identity verification cookie matching credentials workflow
         const token = jwt.sign({ id: user._id, email: user.email }, jwtSecret, { expiresIn: '7d' });
 
         res.cookie('token', token, {
@@ -216,7 +211,6 @@ app.get('/api/auth/google/callback', async (req, res) => {
             maxAge: 7 * 24 * 60 * 60 * 1000
         });
 
-        // 5. Clean redirect user profile back into application dashboard panels
         const clientRedirectUrl = process.env.CLIENT_SUCCESS_URL || 'http://localhost:3000/all-facilities';
         res.redirect(clientRedirectUrl);
 
@@ -246,12 +240,33 @@ app.get('/api/auth/me', async (req, res) => {
     });
 });
 
-// ==========================================
-// 🏟️ FACILITIES ROUTES
-// ==========================================
+// FACILITIES ROUTES
 app.get('/api/facilities', async (req, res) => {
     const result = await facilitiesCollection.find().toArray();
     res.send(result);
+});
+
+app.post('/api/facilities', verifyToken, async (req, res) => {
+    try {
+        const { name, facility_type, location, price_per_hour, capacity, description, image } = req.body;
+        
+        const newFacility = {
+            name,
+            facility_type,
+            location,
+            price_per_hour: parseFloat(price_per_hour) || 0,
+            capacity: parseInt(capacity, 10) || 0,
+            description,
+            image,
+            owner_email: req.user.email, 
+            createdAt: new Date()
+        };
+
+        const result = await facilitiesCollection.insertOne(newFacility);
+        res.status(201).json({ success: true, message: "Facility added successfully!", facilityId: result.insertedId });
+    } catch (err) {
+        res.status(500).json({ message: "Server encountered an error creating the facility listing." });
+    }
 });
 
 app.get('/api/facility/:id', async (req, res) => {
@@ -311,9 +326,9 @@ app.get('/api/my-facilities', async (req, res) => {
     });
 });
 
-// ==========================================
-// 🎫 BOOKINGS ROUTES
-// ==========================================
+
+// BOOKINGS ROUTES
+
 app.post(['/api/booking', '/api/bookings'], verifyToken, async (req, res) => {
     try {
         const facility_id = req.body.facilityId || req.body.facility_id;
