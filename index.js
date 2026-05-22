@@ -130,7 +130,7 @@ app.get('/api/facilities', async (req, res) => {
     res.send(result);
 });
 
-// GET: Single facility details (🛠️ FIXED: Changed route to singular /api/facility/:id)
+// GET: Single facility details
 app.get('/api/facility/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -164,7 +164,7 @@ app.get('/api/facility/:id', async (req, res) => {
     }
 });
 
-// PUT: Update facility details (➕ ADDED: Missing validation and update pipeline)
+// PUT: Update facility details
 app.put('/api/facility/:id', verifyToken, async (req, res) => {
     try {
         const { id } = req.params;
@@ -181,13 +181,11 @@ app.put('/api/facility/:id', verifyToken, async (req, res) => {
             query = { _id: id };
         }
 
-        // Verify that the facility exists
         const existingFacility = await facilitiesCollection.findOne(query);
         if (!existingFacility) {
             return res.status(404).json({ message: "Facility record not found to update." });
         }
 
-        // Build cleanly structured clean data update document
         const updatedData = {
             name: name,
             facility_type: facility_type,
@@ -208,6 +206,24 @@ app.put('/api/facility/:id', verifyToken, async (req, res) => {
     }
 });
 
+// DELETE: Remove facility listing (➕ ADDED: Re-integrated the missing router map for your deletion handlers)
+app.delete('/api/facilities/:id', verifyToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!id) return res.status(400).json({ message: "Required parameter identifier missing." });
+
+        let query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+        const target = await facilitiesCollection.findOne(query);
+
+        if (!target) return res.status(404).json({ message: "Facility context does not exist." });
+
+        await facilitiesCollection.deleteOne(query);
+        res.json({ success: true, message: "Listing successfully truncated." });
+    } catch (err) {
+        res.status(500).json({ message: "Internal destruction handler error.", error: err.message });
+    }
+});
+
 // GET: User's owned facilities
 app.get('/api/my-facilities', async (req, res) => {
     const token = req.cookies.token;
@@ -225,19 +241,28 @@ app.get('/api/my-facilities', async (req, res) => {
 // 🎫 BOOKINGS ROUTES
 // ==========================================
 
-// POST: Create a booking
-app.post('/api/bookings', verifyToken, async (req, res) => {
+// POST: Create a booking (🛠️ FIXED: Added fallback for singular route /api/booking to fix frontend mismatches)
+app.post(['/api/booking', '/api/bookings'], verifyToken, async (req, res) => {
     try {
-        const { facility_id, facility_name, booking_date, time_slot, hours, total_price } = req.body;
+        // 🛠️ FIXED: Frontend payload uses `facilityId`, `date`, `slot`, and `totalBill`
+        // We accept both frontend property name variations to protect against breaks
+        const facility_id = req.body.facilityId || req.body.facility_id;
+        const booking_date = req.body.date || req.body.booking_date;
+        const time_slot = req.body.slot || req.body.time_slot;
+        const total_price = req.body.totalBill || req.body.total_price;
+        const facility_name = req.body.facility_name;
+        const hours = req.body.hours || 2; 
 
         if (!facility_id || !booking_date || !time_slot) {
-            return res.status(400).json({ message: "Missing required booking details." });
+            return res.status(400).json({ message: "Missing required booking payload items (facilityId, date, slot)." });
         }
 
-        const facilityData = await facilitiesCollection.findOne({ _id: new ObjectId(facility_id) });
+        // Secure clean query evaluation for string or true Object IDs
+        let query = ObjectId.isValid(facility_id) ? { _id: new ObjectId(facility_id) } : { _id: facility_id };
+        const facilityData = await facilitiesCollection.findOne(query);
 
         const newBooking = {
-            facilityId: new ObjectId(facility_id),
+            facilityId: ObjectId.isValid(facility_id) ? new ObjectId(facility_id) : facility_id,
             name: facility_name || facilityData?.name || "Premium Arena",
             image: facilityData?.image || "", 
             facility_type: facilityData?.facility_type || "",
@@ -245,7 +270,7 @@ app.post('/api/bookings', verifyToken, async (req, res) => {
             date: booking_date,            
             slot: time_slot,               
             hours: parseInt(hours, 10) || 1,
-            amountPaid: total_price,       
+            amountPaid: total_price || (facilityData?.price_per_hour * parseInt(hours, 10)) || 0,       
             userEmail: req.user.email,     
             status: "PENDING",             
             createdAt: new Date()
@@ -260,6 +285,7 @@ app.post('/api/bookings', verifyToken, async (req, res) => {
         });
 
     } catch (err) {
+        console.error("Error creating booking:", err);
         res.status(500).json({ message: "Server encountered an error saving reservation.", error: err.message });
     }
 });
