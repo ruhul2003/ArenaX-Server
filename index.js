@@ -9,7 +9,7 @@ require("dotenv").config();
 const app = express();
 const port = process.env.PORT || 5000;
 
-// ====================== CORS CONFIG ======================
+// ====================== CORS ======================
 const allowedOrigins = [
     "http://localhost:3000",
     "http://localhost:5000",
@@ -22,7 +22,6 @@ app.use(
             if (!origin || allowedOrigins.includes(origin)) {
                 return callback(null, true);
             }
-            console.log("Blocked origin:", origin);
             return callback(new Error("Not allowed by CORS"));
         },
         credentials: true,
@@ -44,7 +43,6 @@ const client = new MongoClient(uri, {
 
 let db;
 
-// Database Connection Middleware
 const connectDB = async (req, res, next) => {
     try {
         if (!db) {
@@ -84,13 +82,9 @@ const verifyToken = (req, res, next) => {
 app.post("/auth/login", async (req, res) => {
     try {
         const { email } = req.body;
+        if (!email) return res.status(400).json({ message: "Email is required" });
 
-        if (!email) {
-            return res.status(400).json({ message: "Email is required" });
-        }
-
-        const payload = { email };
-        const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "1d" });
+        const token = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: "1d" });
 
         res.cookie("token", token, {
             httpOnly: true,
@@ -115,15 +109,25 @@ app.post("/auth/logout", (req, res) => {
 });
 
 // ====================== FACILITIES ROUTES ======================
+
+// GET Facilities (with owner filter support)
 app.get("/facilities", async (req, res) => {
     try {
-        const cursor = await req.facilitiesCollection.find({}).toArray();
-        res.send(cursor);
+        const { owner_email } = req.query;
+        let query = {};
+
+        if (owner_email) {
+            query.owner_email = owner_email;
+        }
+
+        const facilities = await req.facilitiesCollection.find(query).toArray();
+        res.send(facilities);
     } catch (err) {
         res.status(500).send(err.message);
     }
 });
 
+// POST New Facility (with owner_email from token)
 app.post("/facilities", verifyToken, async (req, res) => {
     try {
         const newFacility = req.body;
@@ -132,11 +136,16 @@ app.post("/facilities", verifyToken, async (req, res) => {
             return res.status(400).json({ message: "Missing required fields: name, location, price_per_hour" });
         }
 
+        // Add owner information from verified token
+        newFacility.owner_email = req.user.email;
+        newFacility.createdAt = new Date();
+
         const result = await req.facilitiesCollection.insertOne(newFacility);
-        res.status(201).json({ 
-            success: true, 
+
+        res.status(201).json({
+            success: true,
             insertedId: result.insertedId,
-            message: "Facility added successfully" 
+            message: "Facility added successfully"
         });
     } catch (err) {
         console.error("Error creating facility:", err);
@@ -149,7 +158,7 @@ app.get("/", (req, res) => {
     res.send("✅ ArenaX Server is running successfully!");
 });
 
-// Start Server for Local Development
+// Start Server (Local)
 if (process.env.NODE_ENV !== "production") {
     app.listen(port, () => {
         console.log(`🚀 Server running on http://localhost:${port}`);
