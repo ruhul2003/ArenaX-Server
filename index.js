@@ -1,168 +1,311 @@
-const express = require("express");
-const cors = require("cors");
-const jwt = require("jsonwebtoken");
-const cookieParser = require("cookie-parser");
-const { MongoClient, ServerApiVersion } = require("mongodb");
-
-require("dotenv").config();
+const express = require('express');
+const cors = require('cors');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
+require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 5000;
+const jwtSecret = process.env.JWT_SECRET || 'your_fallback_secret_key_123';
 
-// ====================== CORS ======================
+// ==========================================
+// ⚙️ MIDDLEWARES
+// ==========================================
 const allowedOrigins = [
-    "http://localhost:3000",
-    "http://localhost:5000",
-    process.env.CLIENT_URL || "https://arenax-cyan.vercel.app",
+    'http://localhost:3000',
+    'https://arenax-cyan.vercel.app'
 ];
 
-app.use(
-    cors({
-        origin: function (origin, callback) {
-            if (!origin || allowedOrigins.includes(origin)) {
-                return callback(null, true);
-            }
-            return callback(new Error("Not allowed by CORS"));
-        },
-        credentials: true,
-    })
-);
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true
+}));
 
 app.use(express.json());
 app.use(cookieParser());
 
-const uri = `mongodb+srv://${process.env.MONGODB_USER}:${process.env.MONGODB_PASS}@tilux-server.cltfmst.mongodb.net/?appName=Tilux-server`;
-
+// ==========================================
+// 🍃 MONGODB CONNECTION
+// ==========================================
+const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri, {
-    serverApi: {
-        version: ServerApiVersion.v1,
-        strict: true,
-        deprecationErrors: true,
-    },
+    serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true }
 });
 
-let db;
+let db, facilitiesCollection, usersCollection, bookingsCollection;
 
-const connectDB = async (req, res, next) => {
+async function startServer() {
     try {
-        if (!db) {
-            await client.connect();
-            db = client.db("ArenaX");
-            console.log("✅ Connected to MongoDB - ArenaX Database");
-        }
-        req.facilitiesCollection = db.collection("Facilities");
-        req.bookingCollection = db.collection("Bookings");
-        next();
-    } catch (error) {
-        console.error("MongoDB Connection Error:", error);
-        res.status(500).json({ message: "Database connection failed" });
-    }
-};
-
-app.use(connectDB);
-
-// ====================== AUTH MIDDLEWARE ======================
-const verifyToken = (req, res, next) => {
-    const token = req.cookies?.token;
-
-    if (!token) {
-        return res.status(401).json({ message: "Access Denied: No token provided." });
-    }
-
-    try {
-        const verified = jwt.verify(token, process.env.JWT_SECRET);
-        req.user = verified;
-        next();
+        await client.connect();
+        db = client.db("ArenaX");
+        facilitiesCollection = db.collection("Facilities");
+        usersCollection = db.collection("Users");
+        bookingsCollection = db.collection("Bookings");
+        
+        console.log("🎯 Connected to MongoDB.");
+        app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
     } catch (err) {
-        return res.status(403).json({ message: "Invalid or expired token." });
+        console.error("❌ MongoDB connection failed:", err);
+        process.exit(1);
     }
+}
+
+// ==========================================
+// 🔐 REUSABLE AUTH MIDDLEWARE
+// ==========================================
+const verifyToken = (req, res, next) => {
+    const token = req.cookies.token;
+    if (!token) return res.status(401).json({ message: "Access denied. Please log in first." });
+
+    jwt.verify(token, jwtSecret, (err, decoded) => {
+        if (err) return res.status(403).json({ message: "Session expired. Please log in again." });
+        req.user = decoded; // Contains id and email
+        next();
+    });
 };
 
-// ====================== AUTH ROUTES ======================
-app.post("/auth/login", async (req, res) => {
+// ==========================================
+// 🔐 AUTH ROUTES
+// ==========================================
+
+app.post('/api/auth/login', async (req, res) => {
     try {
-        const { email } = req.body;
-        if (!email) return res.status(400).json({ message: "Email is required" });
+        const { email, password } = req.body;
+        const user = await usersCollection.findOne({ email: email.toLowerCase().trim() });
+        
+        if (!user || !(await bcrypt.compare(password, user.password))) {
+            return res.status(401).json({ message: "Invalid credentials." });
+        }
 
-        const token = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: "1d" });
+        const token = jwt.sign({ id: user._id, email: user.email }, jwtSecret, { expiresIn: '7d' });
 
-        res.cookie("token", token, {
+        res.cookie('token', token, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-            maxAge: 24 * 60 * 60 * 1000,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+            maxAge: 7 * 24 * 60 * 60 * 1000
         });
 
-        res.json({ success: true, message: "Login successful" });
+        res.json({ success: true, user: { name: user.name, email: user.email, role: user.role } });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
 });
 
-app.post("/auth/logout", (req, res) => {
-    res.clearCookie("token", {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+app.post('/api/auth/logout', (req, res) => {
+    res.clearCookie('token', { 
+        httpOnly: true, 
+        secure: process.env.NODE_ENV === 'production', 
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax' 
     });
     res.json({ success: true, message: "Logged out successfully" });
 });
 
-// ====================== FACILITIES ROUTES ======================
+app.get('/api/auth/me', async (req, res) => {
+    const token = req.cookies.token;
+    if (!token) return res.json({ success: false, user: null });
 
-// GET Facilities (with owner filter support)
-app.get("/facilities", async (req, res) => {
-    try {
-        const { owner_email } = req.query;
-        let query = {};
-
-        if (owner_email) {
-            query.owner_email = owner_email;
-        }
-
-        const facilities = await req.facilitiesCollection.find(query).toArray();
-        res.send(facilities);
-    } catch (err) {
-        res.status(500).send(err.message);
-    }
-});
-
-// POST New Facility (with owner_email from token)
-app.post("/facilities", verifyToken, async (req, res) => {
-    try {
-        const newFacility = req.body;
-
-        if (!newFacility.name || !newFacility.location || !newFacility.price_per_hour) {
-            return res.status(400).json({ message: "Missing required fields: name, location, price_per_hour" });
-        }
-
-        // Add owner information from verified token
-        newFacility.owner_email = req.user.email;
-        newFacility.createdAt = new Date();
-
-        const result = await req.facilitiesCollection.insertOne(newFacility);
-
-        res.status(201).json({
-            success: true,
-            insertedId: result.insertedId,
-            message: "Facility added successfully"
-        });
-    } catch (err) {
-        console.error("Error creating facility:", err);
-        res.status(500).json({ message: err.message });
-    }
-});
-
-// ====================== BASE ROUTE ======================
-app.get("/", (req, res) => {
-    res.send("✅ ArenaX Server is running successfully!");
-});
-
-// Start Server (Local)
-if (process.env.NODE_ENV !== "production") {
-    app.listen(port, () => {
-        console.log(`🚀 Server running on http://localhost:${port}`);
+    jwt.verify(token, jwtSecret, async (err, decoded) => {
+        if (err) return res.json({ success: false, user: null });
+        const user = await usersCollection.findOne({ _id: new ObjectId(decoded.id) }, { projection: { password: 0 } });
+        res.json({ success: true, user });
     });
-}
+});
 
-module.exports = app;
+// ==========================================
+// 🏟️ FACILITIES ROUTES
+// ==========================================
+
+// GET: All facilities
+app.get('/api/facilities', async (req, res) => {
+    const result = await facilitiesCollection.find().toArray();
+    res.send(result);
+});
+
+// GET: Single facility details (🛠️ FIXED: Changed route to singular /api/facility/:id)
+app.get('/api/facility/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        if (!id || id.length < 12) {
+            return res.status(400).json({ message: "Invalid ID format specified." });
+        }
+        
+        let query = {};
+        if (ObjectId.isValid(id)) {
+            query = { 
+                $or: [
+                    { _id: new ObjectId(id) },
+                    { _id: id }
+                ] 
+            };
+        } else {
+            query = { _id: id };
+        }
+        
+        const facility = await facilitiesCollection.findOne(query);
+        
+        if (!facility) {
+            return res.status(404).json({ message: "Facility venue could not be found in database." });
+        }
+        
+        res.json(facility);
+    } catch (err) {
+        console.error("Error fetching facility by ID:", err);
+        res.status(500).json({ message: "Internal Server Error exploring facility details." });
+    }
+});
+
+// PUT: Update facility details (➕ ADDED: Missing validation and update pipeline)
+app.put('/api/facility/:id', verifyToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, facility_type, location, price_per_hour, capacity, description, image } = req.body;
+
+        if (!id || id.length < 12) {
+            return res.status(400).json({ message: "Invalid facility ID format specified." });
+        }
+
+        let query = {};
+        if (ObjectId.isValid(id)) {
+            query = { _id: new ObjectId(id) };
+        } else {
+            query = { _id: id };
+        }
+
+        // Verify that the facility exists
+        const existingFacility = await facilitiesCollection.findOne(query);
+        if (!existingFacility) {
+            return res.status(404).json({ message: "Facility record not found to update." });
+        }
+
+        // Build cleanly structured clean data update document
+        const updatedData = {
+            name: name,
+            facility_type: facility_type,
+            location: location,
+            price_per_hour: parseFloat(price_per_hour) || 0,
+            capacity: parseInt(capacity, 10) || 0,
+            description: description,
+            image: image,
+            updatedAt: new Date()
+        };
+
+        await facilitiesCollection.updateOne(query, { $set: updatedData });
+
+        res.json({ success: true, message: "Facility details saved successfully!" });
+    } catch (err) {
+        console.error("Error updating facility:", err);
+        res.status(500).json({ message: "Server encountered an error saving updates.", error: err.message });
+    }
+});
+
+// GET: User's owned facilities
+app.get('/api/my-facilities', async (req, res) => {
+    const token = req.cookies.token;
+    if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+    jwt.verify(token, jwtSecret, async (err, decoded) => {
+        if (err) return res.status(401).json({ message: "Unauthorized" });
+        
+        const result = await facilitiesCollection.find({ owner_email: decoded.email }).toArray();
+        res.json(result);
+    });
+});
+
+// ==========================================
+// 🎫 BOOKINGS ROUTES
+// ==========================================
+
+// POST: Create a booking
+app.post('/api/bookings', verifyToken, async (req, res) => {
+    try {
+        const { facility_id, facility_name, booking_date, time_slot, hours, total_price } = req.body;
+
+        if (!facility_id || !booking_date || !time_slot) {
+            return res.status(400).json({ message: "Missing required booking details." });
+        }
+
+        const facilityData = await facilitiesCollection.findOne({ _id: new ObjectId(facility_id) });
+
+        const newBooking = {
+            facilityId: new ObjectId(facility_id),
+            name: facility_name || facilityData?.name || "Premium Arena",
+            image: facilityData?.image || "", 
+            facility_type: facilityData?.facility_type || "",
+            location: facilityData?.location || "",
+            date: booking_date,            
+            slot: time_slot,               
+            hours: parseInt(hours, 10) || 1,
+            amountPaid: total_price,       
+            userEmail: req.user.email,     
+            status: "PENDING",             
+            createdAt: new Date()
+        };
+
+        const result = await bookingsCollection.insertOne(newBooking);
+        
+        res.status(201).json({ 
+            success: true, 
+            message: "Reservation logged successfully!", 
+            bookingId: result.insertedId 
+        });
+
+    } catch (err) {
+        res.status(500).json({ message: "Server encountered an error saving reservation.", error: err.message });
+    }
+});
+
+// GET: Current user's bookings
+app.get('/api/my-bookings', verifyToken, async (req, res) => {
+    try {
+        const userBookings = await bookingsCollection
+            .find({ userEmail: req.user.email })
+            .sort({ createdAt: -1 }) 
+            .toArray();
+
+        res.json(userBookings);
+    } catch (err) {
+        res.status(500).json({ message: "Could not fetch user reservations.", error: err.message });
+    }
+});
+
+// PATCH: Cancel a booking
+app.patch('/api/bookings/:id/cancel', verifyToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ message: "Invalid booking ID template." });
+        }
+
+        const targetBooking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+
+        if (!targetBooking) {
+            return res.status(404).json({ message: "Booking record could not be found." });
+        }
+
+        if (targetBooking.userEmail !== req.user.email) {
+            return res.status(403).json({ message: "Forbidden. You do not own this booking." });
+        }
+
+        await bookingsCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status: "CANCELLED" } }
+        );
+
+        res.json({ success: true, message: "Reservation cancelled successfully." });
+    } catch (err) {
+        res.status(500).json({ message: "Server error executing cancellation requests.", error: err.message });
+    }
+});
+
+startServer();
