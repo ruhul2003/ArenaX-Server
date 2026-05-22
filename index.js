@@ -73,7 +73,7 @@ const verifyToken = (req, res, next) => {
 };
 
 // ==========================================
-// 🔐 AUTH ROUTES
+// 🔐 AUTH ROUTES (Credential Sign-In & Sign-Up)
 // ==========================================
 
 app.post('/api/auth/login', async (req, res) => {
@@ -81,7 +81,7 @@ app.post('/api/auth/login', async (req, res) => {
         const { email, password } = req.body;
         const user = await usersCollection.findOne({ email: email.toLowerCase().trim() });
         
-        if (!user || !(await bcrypt.compare(password, user.password))) {
+        if (!user || !user.password || !(await bcrypt.compare(password, user.password))) {
             return res.status(401).json({ message: "Invalid credentials." });
         }
 
@@ -97,6 +97,132 @@ app.post('/api/auth/login', async (req, res) => {
         res.json({ success: true, user: { name: user.name, email: user.email, role: user.role } });
     } catch (err) {
         res.status(500).json({ message: err.message });
+    }
+});
+
+app.post('/api/auth/signup', async (req, res) => {
+    try {
+        const { name, email, password, image } = req.body;
+        const cleanEmail = email.toLowerCase().trim();
+
+        const existingUser = await usersCollection.findOne({ email: cleanEmail });
+        if (existingUser) {
+            return res.status(400).json({ message: "An account with this email address already exists." });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const newUser = {
+            name,
+            email: cleanEmail,
+            password: hashedPassword,
+            image: image || "",
+            role: "user",
+            createdAt: new Date()
+        };
+
+        await usersCollection.insertOne(newUser);
+        res.status(201).json({ success: true, message: "Account created successfully!" });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+});
+
+// ==========================================
+// 🌐 NATIVE MANUAL GOOGLE OAUTH PIPELINE
+// ==========================================
+
+// Route 1: Direct user redirect string generation endpoint
+app.get('/api/auth/google', (req, res) => {
+    const rootUrl = 'https://accounts.google.com/o/oauth2/v2/auth';
+    
+    const options = {
+        redirect_uri: process.env.GOOGLE_CALLBACK_URL || 'http://localhost:5000/api/auth/google/callback',
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        access_type: 'offline',
+        response_type: 'code',
+        prompt: 'consent',
+        scope: [
+            'https://www.googleapis.com/auth/userinfo.profile',
+            'https://www.googleapis.com/auth/userinfo.email'
+        ].join(' ')
+    };
+
+    const queryString = new URLSearchParams(options).toString();
+    res.redirect(`${rootUrl}?${queryString}`);
+});
+
+// Route 2: Receiving callback exchange handler
+app.get('/api/auth/google/callback', async (req, res) => {
+    const { code } = req.query;
+    
+    if (!code) {
+        return res.redirect('http://localhost:3000/login?error=no_code_provided');
+    }
+
+    try {
+        // 1. Exchange authorization code for access tokens
+        const tokenUrl = 'https://oauth2.googleapis.com/token';
+        const tokenValues = {
+            code,
+            client_id: process.env.GOOGLE_CLIENT_ID,
+            client_secret: process.env.GOOGLE_CLIENT_SECRET,
+            redirect_uri: process.env.GOOGLE_CALLBACK_URL || 'http://localhost:5000/api/auth/google/callback',
+            grant_type: 'authorization_code'
+        };
+
+        const tokenResponse = await fetch(tokenUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams(tokenValues).toString()
+        });
+
+        const tokenData = await tokenResponse.json();
+        if (!tokenResponse.ok) {
+            throw new Error(tokenData.error_description || 'Failed to exchange OAuth code');
+        }
+
+        const { id_token, access_token } = tokenData;
+
+        // 2. Query Google APIs using access token to retrieve profile details
+        const profileResponse = await fetch(`https://www.googleapis.com/oauth2/v1/userinfo?alt=json&access_token=${access_token}`, {
+            headers: { Authorization: `Bearer ${id_token}` }
+        });
+
+        const profile = await profileResponse.json();
+        const emailAddress = profile.email.toLowerCase().trim();
+
+        // 3. Look up or Upsert user entity document inside MongoDB context
+        let user = await usersCollection.findOne({ email: emailAddress });
+
+        if (!user) {
+            const newUser = {
+                name: profile.name,
+                email: emailAddress,
+                image: profile.picture || "",
+                role: "user",
+                createdAt: new Date()
+            };
+            const result = await usersCollection.insertOne(newUser);
+            user = { _id: result.insertedId, ...newUser };
+        }
+
+        // 4. Issue native identity verification cookie matching credentials workflow
+        const token = jwt.sign({ id: user._id, email: user.email }, jwtSecret, { expiresIn: '7d' });
+
+        res.cookie('token', token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+            maxAge: 7 * 24 * 60 * 60 * 1000
+        });
+
+        // 5. Clean redirect user profile back into application dashboard panels
+        const clientRedirectUrl = process.env.CLIENT_SUCCESS_URL || 'http://localhost:3000/all-facilities';
+        res.redirect(clientRedirectUrl);
+
+    } catch (err) {
+        console.error("Native Google OAuth Error:", err);
+        res.redirect('http://localhost:3000/login?error=authentication_failed');
     }
 });
 
@@ -123,115 +249,63 @@ app.get('/api/auth/me', async (req, res) => {
 // ==========================================
 // 🏟️ FACILITIES ROUTES
 // ==========================================
-
-// GET: All facilities
 app.get('/api/facilities', async (req, res) => {
     const result = await facilitiesCollection.find().toArray();
     res.send(result);
 });
 
-// GET: Single facility details
 app.get('/api/facility/:id', async (req, res) => {
     try {
         const { id } = req.params;
+        if (!id || id.length < 12) return res.status(400).json({ message: "Invalid ID format specified." });
         
-        if (!id || id.length < 12) {
-            return res.status(400).json({ message: "Invalid ID format specified." });
-        }
-        
-        let query = {};
-        if (ObjectId.isValid(id)) {
-            query = { 
-                $or: [
-                    { _id: new ObjectId(id) },
-                    { _id: id }
-                ] 
-            };
-        } else {
-            query = { _id: id };
-        }
-        
+        let query = ObjectId.isValid(id) ? { $or: [{ _id: new ObjectId(id) }, { _id: id }] } : { _id: id };
         const facility = await facilitiesCollection.findOne(query);
-        
-        if (!facility) {
-            return res.status(404).json({ message: "Facility venue could not be found in database." });
-        }
+        if (!facility) return res.status(404).json({ message: "Facility venue could not be found." });
         
         res.json(facility);
     } catch (err) {
-        console.error("Error fetching facility by ID:", err);
         res.status(500).json({ message: "Internal Server Error exploring facility details." });
     }
 });
 
-// PUT: Update facility details
 app.put('/api/facility/:id', verifyToken, async (req, res) => {
     try {
         const { id } = req.params;
         const { name, facility_type, location, price_per_hour, capacity, description, image } = req.body;
 
-        if (!id || id.length < 12) {
-            return res.status(400).json({ message: "Invalid facility ID format specified." });
-        }
-
-        let query = {};
-        if (ObjectId.isValid(id)) {
-            query = { _id: new ObjectId(id) };
-        } else {
-            query = { _id: id };
-        }
-
-        const existingFacility = await facilitiesCollection.findOne(query);
-        if (!existingFacility) {
-            return res.status(404).json({ message: "Facility record not found to update." });
-        }
-
+        let query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
         const updatedData = {
-            name: name,
-            facility_type: facility_type,
-            location: location,
+            name, facility_type, location,
             price_per_hour: parseFloat(price_per_hour) || 0,
             capacity: parseInt(capacity, 10) || 0,
-            description: description,
-            image: image,
-            updatedAt: new Date()
+            description, image, updatedAt: new Date()
         };
 
         await facilitiesCollection.updateOne(query, { $set: updatedData });
-
         res.json({ success: true, message: "Facility details saved successfully!" });
     } catch (err) {
-        console.error("Error updating facility:", err);
-        res.status(500).json({ message: "Server encountered an error saving updates.", error: err.message });
+        res.status(500).json({ message: "Server encountered an error saving updates." });
     }
 });
 
-// DELETE: Remove facility listing (➕ ADDED: Re-integrated the missing router map for your deletion handlers)
 app.delete('/api/facilities/:id', verifyToken, async (req, res) => {
     try {
         const { id } = req.params;
-        if (!id) return res.status(400).json({ message: "Required parameter identifier missing." });
-
         let query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
-        const target = await facilitiesCollection.findOne(query);
-
-        if (!target) return res.status(404).json({ message: "Facility context does not exist." });
-
         await facilitiesCollection.deleteOne(query);
         res.json({ success: true, message: "Listing successfully truncated." });
     } catch (err) {
-        res.status(500).json({ message: "Internal destruction handler error.", error: err.message });
+        res.status(500).json({ message: "Internal destruction handler error." });
     }
 });
 
-// GET: User's owned facilities
 app.get('/api/my-facilities', async (req, res) => {
     const token = req.cookies.token;
     if (!token) return res.status(401).json({ message: "Unauthorized" });
 
     jwt.verify(token, jwtSecret, async (err, decoded) => {
         if (err) return res.status(401).json({ message: "Unauthorized" });
-        
         const result = await facilitiesCollection.find({ owner_email: decoded.email }).toArray();
         res.json(result);
     });
@@ -240,12 +314,8 @@ app.get('/api/my-facilities', async (req, res) => {
 // ==========================================
 // 🎫 BOOKINGS ROUTES
 // ==========================================
-
-// POST: Create a booking (🛠️ FIXED: Added fallback for singular route /api/booking to fix frontend mismatches)
 app.post(['/api/booking', '/api/bookings'], verifyToken, async (req, res) => {
     try {
-        // 🛠️ FIXED: Frontend payload uses `facilityId`, `date`, `slot`, and `totalBill`
-        // We accept both frontend property name variations to protect against breaks
         const facility_id = req.body.facilityId || req.body.facility_id;
         const booking_date = req.body.date || req.body.booking_date;
         const time_slot = req.body.slot || req.body.time_slot;
@@ -254,10 +324,9 @@ app.post(['/api/booking', '/api/bookings'], verifyToken, async (req, res) => {
         const hours = req.body.hours || 2; 
 
         if (!facility_id || !booking_date || !time_slot) {
-            return res.status(400).json({ message: "Missing required booking payload items (facilityId, date, slot)." });
+            return res.status(400).json({ message: "Missing required booking payload items." });
         }
 
-        // Secure clean query evaluation for string or true Object IDs
         let query = ObjectId.isValid(facility_id) ? { _id: new ObjectId(facility_id) } : { _id: facility_id };
         const facilityData = await facilitiesCollection.findOne(query);
 
@@ -277,60 +346,34 @@ app.post(['/api/booking', '/api/bookings'], verifyToken, async (req, res) => {
         };
 
         const result = await bookingsCollection.insertOne(newBooking);
-        
-        res.status(201).json({ 
-            success: true, 
-            message: "Reservation logged successfully!", 
-            bookingId: result.insertedId 
-        });
-
+        res.status(201).json({ success: true, message: "Reservation logged successfully!", bookingId: result.insertedId });
     } catch (err) {
-        console.error("Error creating booking:", err);
-        res.status(500).json({ message: "Server encountered an error saving reservation.", error: err.message });
+        res.status(500).json({ message: "Server encountered an error saving reservation." });
     }
 });
 
-// GET: Current user's bookings
 app.get('/api/my-bookings', verifyToken, async (req, res) => {
     try {
-        const userBookings = await bookingsCollection
-            .find({ userEmail: req.user.email })
-            .sort({ createdAt: -1 }) 
-            .toArray();
-
+        const userBookings = await bookingsCollection.find({ userEmail: req.user.email }).sort({ createdAt: -1 }).toArray();
         res.json(userBookings);
     } catch (err) {
-        res.status(500).json({ message: "Could not fetch user reservations.", error: err.message });
+        res.status(500).json({ message: "Could not fetch user reservations." });
     }
 });
 
-// PATCH: Cancel a booking
 app.patch('/api/bookings/:id/cancel', verifyToken, async (req, res) => {
     try {
         const { id } = req.params;
-
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).json({ message: "Invalid booking ID template." });
-        }
+        if (!ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid booking ID template." });
 
         const targetBooking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+        if (!targetBooking) return res.status(404).json({ message: "Booking record could not be found." });
+        if (targetBooking.userEmail !== req.user.email) return res.status(403).json({ message: "Forbidden." });
 
-        if (!targetBooking) {
-            return res.status(404).json({ message: "Booking record could not be found." });
-        }
-
-        if (targetBooking.userEmail !== req.user.email) {
-            return res.status(403).json({ message: "Forbidden. You do not own this booking." });
-        }
-
-        await bookingsCollection.updateOne(
-            { _id: new ObjectId(id) },
-            { $set: { status: "CANCELLED" } }
-        );
-
+        await bookingsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status: "CANCELLED" } });
         res.json({ success: true, message: "Reservation cancelled successfully." });
     } catch (err) {
-        res.status(500).json({ message: "Server error executing cancellation requests.", error: err.message });
+        res.status(500).json({ message: "Server error executing cancellation requests." });
     }
 });
 
