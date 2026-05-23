@@ -10,9 +10,8 @@ const app = express();
 const port = process.env.PORT || 5000;
 const jwtSecret = process.env.JWT_SECRET || 'your_fallback_secret_key_123';
 
-// ==========================================
+
 // 1. MIDDLEWARES & CORS CONFIGURATION
-// ==========================================
 
 const allowedOrigins = [
     'http://localhost:3000',
@@ -33,9 +32,7 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser());
 
-// ==========================================
 // 2. SERVERLESS MONGOOSE/MONGODB CONNECTIVITY
-// ==========================================
 
 const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri, {
@@ -60,7 +57,6 @@ async function connectDatabaseMiddleware(req, res, next) {
             console.log("Lazy connected to MongoDB Atlas context successfully.");
         }
         
-        // Attach references down to request scope pipeline
         req.dbCollections = cachedCollections;
         next();
     } catch (err) {
@@ -69,12 +65,9 @@ async function connectDatabaseMiddleware(req, res, next) {
     }
 }
 
-// Inject database context across all API routes automatically
 app.use('/api', connectDatabaseMiddleware);
 
-// ==========================================
 // 3. REUSABLE AUTH MIDDLEWARE
-// ==========================================
 
 const verifyToken = (req, res, next) => {
     const token = req.cookies.token;
@@ -87,9 +80,7 @@ const verifyToken = (req, res, next) => {
     });
 };
 
-// ==========================================
 // 4. AUTH ROUTES (Credential Sign-In & Sign-Up)
-// ==========================================
 
 app.post('/api/auth/login', async (req, res) => {
     try {
@@ -105,7 +96,7 @@ app.post('/api/auth/login', async (req, res) => {
 
         res.cookie('token', token, {
             httpOnly: true,
-            secure: true, // Required over Vercel Serverless Production environments
+            secure: true, 
             sameSite: 'none',
             maxAge: 7 * 24 * 60 * 60 * 1000
         });
@@ -144,9 +135,7 @@ app.post('/api/auth/signup', async (req, res) => {
     }
 });
 
-// ==========================================
 // 5. NATIVE MANUAL GOOGLE OAUTH PIPELINE
-// ==========================================
 
 app.get('/api/auth/google', (req, res) => {
     const rootUrl = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -263,9 +252,7 @@ app.get('/api/auth/me', async (req, res) => {
     }
 });
 
-// ==========================================
 // 6. FACILITIES ROUTES
-// ==========================================
 
 app.get('/api/facilities', async (req, res) => {
     try {
@@ -366,9 +353,7 @@ app.get('/api/my-facilities', async (req, res) => {
     }
 });
 
-// ==========================================
 // 7. BOOKINGS ROUTES
-// ==========================================
 
 app.post(['/api/booking', '/api/bookings'], verifyToken, async (req, res) => {
     try {
@@ -437,14 +422,11 @@ app.patch('/api/bookings/:id/cancel', verifyToken, async (req, res) => {
     }
 });
 
-// Default fallback fallback check route for Vercel functions verification
 app.get('/', (req, res) => {
     res.status(200).json({ status: "healthy", service: "ArenaX Live Engine" });
 });
 
-// ==========================================
 // 8. LOCAL OR SERVERLESS SYSTEM HOOK EXPORTS
-// ==========================================
 
 if (process.env.NODE_ENV !== 'production') {
     app.listen(port, () => console.log(`Local development operational instance running on port ${port}`));
