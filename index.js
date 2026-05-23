@@ -13,9 +13,10 @@ const jwtSecret = process.env.JWT_SECRET || 'your_fallback_secret_key_123';
 
 // MIDDLEWARES
 
+
 const allowedOrigins = [
     'http://localhost:3000',
-    'https://arenax-cyan.vercel.app'
+    'https://arena-x-xi.vercel.app'
 ];
 
 app.use(cors({
