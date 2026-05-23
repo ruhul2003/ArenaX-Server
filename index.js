@@ -10,9 +10,9 @@ const app = express();
 const port = process.env.PORT || 5000;
 const jwtSecret = process.env.JWT_SECRET || 'your_fallback_secret_key_123';
 
-
-// MIDDLEWARES
-
+// ==========================================
+// 1. MIDDLEWARES & CORS CONFIGURATION
+// ==========================================
 
 const allowedOrigins = [
     'http://localhost:3000',
@@ -33,34 +33,48 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser());
 
-
-//  MONGODB CONNECTION
+// ==========================================
+// 2. SERVERLESS MONGOOSE/MONGODB CONNECTIVITY
+// ==========================================
 
 const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri, {
     serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true }
 });
 
-let db, facilitiesCollection, usersCollection, bookingsCollection;
+let cachedDb = null;
+let cachedCollections = {};
 
-async function startServer() {
+// Serverless Middleware to manage database/collection state context safely
+async function connectDatabaseMiddleware(req, res, next) {
     try {
-        await client.connect();
-        db = client.db("ArenaX");
-        facilitiesCollection = db.collection("Facilities");
-        usersCollection = db.collection("Users");
-        bookingsCollection = db.collection("Bookings");
+        if (!cachedDb) {
+            await client.connect();
+            cachedDb = client.db("ArenaX");
+            
+            cachedCollections = {
+                facilitiesCollection: cachedDb.collection("Facilities"),
+                usersCollection: cachedDb.collection("Users"),
+                bookingsCollection: cachedDb.collection("Bookings")
+            };
+            console.log("Lazy connected to MongoDB Atlas context successfully.");
+        }
         
-        console.log("Connected to MongoDB.");
-        app.listen(port, () => console.log(`Server running on port ${port}`));
+        // Attach references down to request scope pipeline
+        req.dbCollections = cachedCollections;
+        next();
     } catch (err) {
-        console.error("MongoDB connection failed:", err);
-        process.exit(1);
+        console.error("Database initialization failed downstream:", err);
+        res.status(500).json({ message: "Database connection failed downstream." });
     }
 }
 
+// Inject database context across all API routes automatically
+app.use('/api', connectDatabaseMiddleware);
 
-// REUSABLE AUTH MIDDLEWARE
+// ==========================================
+// 3. REUSABLE AUTH MIDDLEWARE
+// ==========================================
 
 const verifyToken = (req, res, next) => {
     const token = req.cookies.token;
@@ -73,12 +87,13 @@ const verifyToken = (req, res, next) => {
     });
 };
 
-
-// AUTH ROUTES (Credential Sign-In & Sign-Up)
-
+// ==========================================
+// 4. AUTH ROUTES (Credential Sign-In & Sign-Up)
+// ==========================================
 
 app.post('/api/auth/login', async (req, res) => {
     try {
+        const { usersCollection } = req.dbCollections;
         const { email, password } = req.body;
         const user = await usersCollection.findOne({ email: email.toLowerCase().trim() });
         
@@ -90,8 +105,8 @@ app.post('/api/auth/login', async (req, res) => {
 
         res.cookie('token', token, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+            secure: true, // Required over Vercel Serverless Production environments
+            sameSite: 'none',
             maxAge: 7 * 24 * 60 * 60 * 1000
         });
 
@@ -103,6 +118,7 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.post('/api/auth/signup', async (req, res) => {
     try {
+        const { usersCollection } = req.dbCollections;
         const { name, email, password, image } = req.body;
         const cleanEmail = email.toLowerCase().trim();
 
@@ -128,10 +144,9 @@ app.post('/api/auth/signup', async (req, res) => {
     }
 });
 
-
-// 🌐 NATIVE MANUAL GOOGLE OAUTH PIPELINE
-
-
+// ==========================================
+// 5. NATIVE MANUAL GOOGLE OAUTH PIPELINE
+// ==========================================
 
 app.get('/api/auth/google', (req, res) => {
     const rootUrl = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -154,12 +169,14 @@ app.get('/api/auth/google', (req, res) => {
 
 app.get('/api/auth/google/callback', async (req, res) => {
     const { code } = req.query;
+    const clientUrl = process.env.CLIENT_URL || 'https://arena-x-xi.vercel.app';
     
     if (!code) {
-        return res.redirect('http://localhost:3000/login?error=no_code_provided');
+        return res.redirect(`${clientUrl}/login?error=no_code_provided`);
     }
 
     try {
+        const { usersCollection } = req.dbCollections;
         const tokenUrl = 'https://oauth2.googleapis.com/token';
         const tokenValues = {
             code,
@@ -207,25 +224,25 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
         res.cookie('token', token, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+            secure: true,
+            sameSite: 'none',
             maxAge: 7 * 24 * 60 * 60 * 1000
         });
 
-        const clientRedirectUrl = process.env.CLIENT_SUCCESS_URL || 'http://localhost:3000/all-facilities';
+        const clientRedirectUrl = process.env.CLIENT_SUCCESS_URL || `${clientUrl}/all-facilities`;
         res.redirect(clientRedirectUrl);
 
     } catch (err) {
         console.error("Native Google OAuth Error:", err);
-        res.redirect('http://localhost:3000/login?error=authentication_failed');
+        res.redirect(`${clientUrl}/login?error=authentication_failed`);
     }
 });
 
 app.post('/api/auth/logout', (req, res) => {
     res.clearCookie('token', { 
         httpOnly: true, 
-        secure: process.env.NODE_ENV === 'production', 
-        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax' 
+        secure: true, 
+        sameSite: 'none'
     });
     res.json({ success: true, message: "Logged out successfully" });
 });
@@ -234,21 +251,35 @@ app.get('/api/auth/me', async (req, res) => {
     const token = req.cookies.token;
     if (!token) return res.json({ success: false, user: null });
 
-    jwt.verify(token, jwtSecret, async (err, decoded) => {
-        if (err) return res.json({ success: false, user: null });
-        const user = await usersCollection.findOne({ _id: new ObjectId(decoded.id) }, { projection: { password: 0 } });
-        res.json({ success: true, user });
-    });
+    try {
+        const { usersCollection } = req.dbCollections;
+        jwt.verify(token, jwtSecret, async (err, decoded) => {
+            if (err) return res.json({ success: false, user: null });
+            const user = await usersCollection.findOne({ _id: new ObjectId(decoded.id) }, { projection: { password: 0 } });
+            res.json({ success: true, user });
+        });
+    } catch (error) {
+        res.json({ success: false, user: null });
+    }
 });
 
-// FACILITIES ROUTES
+// ==========================================
+// 6. FACILITIES ROUTES
+// ==========================================
+
 app.get('/api/facilities', async (req, res) => {
-    const result = await facilitiesCollection.find().toArray();
-    res.send(result);
+    try {
+        const { facilitiesCollection } = req.dbCollections;
+        const result = await facilitiesCollection.find().toArray();
+        res.send(result);
+    } catch (err) {
+        res.status(500).json({ message: "Failed to load facilities data." });
+    }
 });
 
 app.post('/api/facilities', verifyToken, async (req, res) => {
     try {
+        const { facilitiesCollection } = req.dbCollections;
         const { name, facility_type, location, price_per_hour, capacity, description, image } = req.body;
         
         const newFacility = {
@@ -272,6 +303,7 @@ app.post('/api/facilities', verifyToken, async (req, res) => {
 
 app.get('/api/facility/:id', async (req, res) => {
     try {
+        const { facilitiesCollection } = req.dbCollections;
         const { id } = req.params;
         if (!id || id.length < 12) return res.status(400).json({ message: "Invalid ID format specified." });
         
@@ -287,6 +319,7 @@ app.get('/api/facility/:id', async (req, res) => {
 
 app.put('/api/facility/:id', verifyToken, async (req, res) => {
     try {
+        const { facilitiesCollection } = req.dbCollections;
         const { id } = req.params;
         const { name, facility_type, location, price_per_hour, capacity, description, image } = req.body;
 
@@ -307,6 +340,7 @@ app.put('/api/facility/:id', verifyToken, async (req, res) => {
 
 app.delete('/api/facilities/:id', verifyToken, async (req, res) => {
     try {
+        const { facilitiesCollection } = req.dbCollections;
         const { id } = req.params;
         let query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
         await facilitiesCollection.deleteOne(query);
@@ -320,18 +354,26 @@ app.get('/api/my-facilities', async (req, res) => {
     const token = req.cookies.token;
     if (!token) return res.status(401).json({ message: "Unauthorized" });
 
-    jwt.verify(token, jwtSecret, async (err, decoded) => {
-        if (err) return res.status(401).json({ message: "Unauthorized" });
-        const result = await facilitiesCollection.find({ owner_email: decoded.email }).toArray();
-        res.json(result);
-    });
+    try {
+        const { facilitiesCollection } = req.dbCollections;
+        jwt.verify(token, jwtSecret, async (err, decoded) => {
+            if (err) return res.status(401).json({ message: "Unauthorized" });
+            const result = await facilitiesCollection.find({ owner_email: decoded.email }).toArray();
+            res.json(result);
+        });
+    } catch (error) {
+        res.status(500).json({ message: "Failed to access user details." });
+    }
 });
 
-
-// BOOKINGS ROUTES
+// ==========================================
+// 7. BOOKINGS ROUTES
+// ==========================================
 
 app.post(['/api/booking', '/api/bookings'], verifyToken, async (req, res) => {
     try {
+        const { facilitiesCollection, bookingsCollection } = req.dbCollections;
+        
         const facility_id = req.body.facilityId || req.body.facility_id;
         const booking_date = req.body.date || req.body.booking_date;
         const time_slot = req.body.slot || req.body.time_slot;
@@ -370,6 +412,7 @@ app.post(['/api/booking', '/api/bookings'], verifyToken, async (req, res) => {
 
 app.get('/api/my-bookings', verifyToken, async (req, res) => {
     try {
+        const { bookingsCollection } = req.dbCollections;
         const userBookings = await bookingsCollection.find({ userEmail: req.user.email }).sort({ createdAt: -1 }).toArray();
         res.json(userBookings);
     } catch (err) {
@@ -379,6 +422,7 @@ app.get('/api/my-bookings', verifyToken, async (req, res) => {
 
 app.patch('/api/bookings/:id/cancel', verifyToken, async (req, res) => {
     try {
+        const { bookingsCollection } = req.dbCollections;
         const { id } = req.params;
         if (!ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid booking ID template." });
 
@@ -393,4 +437,17 @@ app.patch('/api/bookings/:id/cancel', verifyToken, async (req, res) => {
     }
 });
 
-startServer();
+// Default fallback fallback check route for Vercel functions verification
+app.get('/', (req, res) => {
+    res.status(200).json({ status: "healthy", service: "ArenaX Live Engine" });
+});
+
+// ==========================================
+// 8. LOCAL OR SERVERLESS SYSTEM HOOK EXPORTS
+// ==========================================
+
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(port, () => console.log(`Local development operational instance running on port ${port}`));
+}
+
+module.exports = app;
