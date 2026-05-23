@@ -145,11 +145,12 @@ app.post('/api/auth/signup', async (req, res) => {
 });
 
 // ==========================================
-// 5. NATIVE MANUAL GOOGLE OAUTH PIPELINE
+// 5. NATIVE MANUAL GOOGLE OAUTH PIPELINE (UPDATED)
 // ==========================================
 
 app.get('/api/auth/google', (req, res) => {
     const rootUrl = 'https://accounts.google.com/o/oauth2/v2/auth';
+    const redirectParam = req.query.redirect || '/all-facilities'; // Capture intended destination
     
     const options = {
         redirect_uri: process.env.GOOGLE_CALLBACK_URL || 'http://localhost:5000/api/auth/google/callback',
@@ -160,7 +161,8 @@ app.get('/api/auth/google', (req, res) => {
         scope: [
             'https://www.googleapis.com/auth/userinfo.profile',
             'https://www.googleapis.com/auth/userinfo.email'
-        ].join(' ')
+        ].join(' '),
+        state: encodeURIComponent(redirectParam) // Pass redirect via state parameter
     };
 
     const queryString = new URLSearchParams(options).toString();
@@ -168,8 +170,8 @@ app.get('/api/auth/google', (req, res) => {
 });
 
 app.get('/api/auth/google/callback', async (req, res) => {
-    const { code } = req.query;
-    const clientUrl = process.env.CLIENT_URL || 'https://arena-x-xi.vercel.app';
+    const { code, state } = req.query;
+    const clientUrl = process.env.CLIENT_URL || 'https://arenax-cyan.vercel.app';
     
     if (!code) {
         return res.redirect(`${clientUrl}/login?error=no_code_provided`);
@@ -197,11 +199,13 @@ app.get('/api/auth/google/callback', async (req, res) => {
             throw new Error(tokenData.error_description || 'Failed to exchange OAuth code');
         }
 
-        const { id_token, access_token } = tokenData;
+        const { access_token } = tokenData;
 
-        const profileResponse = await fetch(`https://www.googleapis.com/oauth2/v1/userinfo?alt=json&access_token=${access_token}`, {
-            headers: { Authorization: `Bearer ${id_token}` }
-        });
+        // Fixed: Use access_token correctly
+        const profileResponse = await fetch(
+            `https://www.googleapis.com/oauth2/v1/userinfo?alt=json&access_token=${access_token}`,
+            { headers: { Authorization: `Bearer ${access_token}` } }
+        );
 
         const profile = await profileResponse.json();
         const emailAddress = profile.email.toLowerCase().trim();
@@ -229,37 +233,20 @@ app.get('/api/auth/google/callback', async (req, res) => {
             maxAge: 7 * 24 * 60 * 60 * 1000
         });
 
-        const clientRedirectUrl = process.env.CLIENT_SUCCESS_URL || `${clientUrl}/all-facilities`;
-        res.redirect(clientRedirectUrl);
+        // Use state parameter for redirect (decoded)
+        let redirectUrl = '/all-facilities';
+        if (state) {
+            try {
+                redirectUrl = decodeURIComponent(state);
+            } catch (e) {}
+        }
+
+        const finalRedirect = `${clientUrl}${redirectUrl.startsWith('/') ? redirectUrl : '/' + redirectUrl}`;
+        res.redirect(finalRedirect);
 
     } catch (err) {
         console.error("Native Google OAuth Error:", err);
         res.redirect(`${clientUrl}/login?error=authentication_failed`);
-    }
-});
-
-app.post('/api/auth/logout', (req, res) => {
-    res.clearCookie('token', { 
-        httpOnly: true, 
-        secure: true, 
-        sameSite: 'none'
-    });
-    res.json({ success: true, message: "Logged out successfully" });
-});
-
-app.get('/api/auth/me', async (req, res) => {
-    const token = req.cookies.token;
-    if (!token) return res.json({ success: false, user: null });
-
-    try {
-        const { usersCollection } = req.dbCollections;
-        jwt.verify(token, jwtSecret, async (err, decoded) => {
-            if (err) return res.json({ success: false, user: null });
-            const user = await usersCollection.findOne({ _id: new ObjectId(decoded.id) }, { projection: { password: 0 } });
-            res.json({ success: true, user });
-        });
-    } catch (error) {
-        res.json({ success: false, user: null });
     }
 });
 
