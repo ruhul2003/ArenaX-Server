@@ -19,13 +19,20 @@ const allowedOrigins = [
 
 app.use(cors({
     origin: (origin, callback) => {
+        const allowedOrigins = [
+            'http://localhost:3000',
+            'https://arenax-cyan.vercel.app',
+            'https://arena-x-xi.vercel.app'
+        ];
         if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
             callback(new Error('Not allowed by CORS'));
         }
     },
-    credentials: true
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json());
