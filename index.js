@@ -19,11 +19,6 @@ const allowedOrigins = [
 
 app.use(cors({
     origin: (origin, callback) => {
-        const allowedOrigins = [
-            'http://localhost:3000',
-            'https://arenax-cyan.vercel.app',
-            'https://arena-x-xi.vercel.app'
-        ];
         if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
@@ -32,7 +27,7 @@ app.use(cors({
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie']
 }));
 
 app.use(express.json());
@@ -103,7 +98,8 @@ app.post('/api/auth/login', async (req, res) => {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
             sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-            maxAge: 7 * 24 * 60 * 60 * 1000
+            maxAge: 7 * 24 * 60 * 60 * 1000 ,
+            path: '/'
         });
 
         res.json({ success: true, user: { name: user.name, email: user.email, role: user.role } });
@@ -142,89 +138,8 @@ app.post('/api/auth/signup', async (req, res) => {
     }
 });
 
-// Google OAuth
-app.get('/api/auth/google', (req, res) => {
-    const rootUrl = 'https://accounts.google.com/o/oauth2/v2/auth';
-    
-    const options = {
-        redirect_uri: process.env.GOOGLE_CALLBACK_URL,
-        client_id: process.env.GOOGLE_CLIENT_ID,
-        access_type: 'offline',
-        response_type: 'code',
-        prompt: 'consent',
-        scope: 'email profile'
-    };
 
-    const queryString = new URLSearchParams(options).toString();
-    res.redirect(`${rootUrl}?${queryString}`);
-});
 
-app.get('/api/auth/google/callback', async (req, res) => {
-    const { code } = req.query;
-    const clientUrl = process.env.CLIENT_URL || 'https://arenax-cyan.vercel.app';
-
-    if (!code) {
-        return res.redirect(`${clientUrl}/login?error=no_code_provided`);
-    }
-
-    try {
-        const { usersCollection } = req.dbCollections;
-
-        const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({
-                code,
-                client_id: process.env.GOOGLE_CLIENT_ID,
-                client_secret: process.env.GOOGLE_CLIENT_SECRET,
-                redirect_uri: process.env.GOOGLE_CALLBACK_URL,
-                grant_type: 'authorization_code'
-            })
-        });
-
-        const tokenData = await tokenResponse.json();
-        if (!tokenResponse.ok) {
-            throw new Error(tokenData.error_description || 'Failed to exchange code');
-        }
-
-        const { access_token } = tokenData;
-
-        const profileResponse = await fetch(`https://www.googleapis.com/oauth2/v1/userinfo?access_token=${access_token}`);
-        const profile = await profileResponse.json();
-
-        const emailAddress = profile.email.toLowerCase().trim();
-
-        let user = await usersCollection.findOne({ email: emailAddress });
-
-        if (!user) {
-            const newUser = {
-                name: profile.name,
-                email: emailAddress,
-                image: profile.picture || "",
-                role: "user",
-                createdAt: new Date()
-            };
-            const result = await usersCollection.insertOne(newUser);
-            user = { _id: result.insertedId, ...newUser };
-        }
-
-        const token = jwt.sign({ id: user._id, email: user.email }, jwtSecret, { expiresIn: '7d' });
-
-        res.cookie('token', token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-            maxAge: 7 * 24 * 60 * 60 * 1000
-        });
-
-        const successUrl = process.env.CLIENT_SUCCESS_URL || `${clientUrl}/all-facilities`;
-        res.redirect(successUrl);
-
-    } catch (err) {
-        console.error("Google OAuth Error:", err);
-        res.redirect(`${clientUrl}/login?error=authentication_failed`);
-    }
-});
 
 // Logout
 app.post('/api/auth/logout', (req, res) => {
@@ -237,22 +152,34 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 // Check current user
+// Check current user
 app.get('/api/auth/me', async (req, res) => {
     const token = req.cookies.token;
-    if (!token) return res.json({ success: false, user: null });
+    if (!token) {
+        return res.json({ success: false, user: null });
+    }
 
     try {
         const { usersCollection } = req.dbCollections;
+        
         jwt.verify(token, jwtSecret, async (err, decoded) => {
-            if (err) return res.json({ success: false, user: null });
+            if (err) {
+                return res.json({ success: false, user: null });
+            }
             
             const user = await usersCollection.findOne(
                 { _id: new ObjectId(decoded.id) }, 
                 { projection: { password: 0 } }
             );
+
+            if (!user) {
+                return res.json({ success: false, user: null });
+            }
+
             res.json({ success: true, user });
         });
     } catch (error) {
+        console.error("ME endpoint error:", error);
         res.json({ success: false, user: null });
     }
 });
