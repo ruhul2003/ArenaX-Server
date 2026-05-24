@@ -11,6 +11,7 @@ const port = process.env.PORT || 5000;
 const jwtSecret = process.env.JWT_SECRET || 'your_fallback_secret_key_123';
 
 // ====================== MIDDLEWARES ======================
+// ====================== MIDDLEWARES ======================
 const allowedOrigins = [
     'http://localhost:3000',
     'https://arenax-cyan.vercel.app',
@@ -27,11 +28,49 @@ app.use(cors({
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie']
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json());
 app.use(cookieParser());
+
+// Apply DB middleware only to /api routes
+app.use('/api', connectDatabaseMiddleware);
+
+// ====================== AUTH ROUTES ======================
+
+// Check current user - FIXED
+app.get('/api/auth/me', async (req, res) => {
+    try {
+        const token = req.cookies.token;
+        if (!token) {
+            return res.json({ success: false, user: null });
+        }
+
+        const { usersCollection } = req.dbCollections;
+
+        jwt.verify(token, jwtSecret, async (err, decoded) => {
+            if (err) {
+                console.error("JWT verify error:", err);
+                return res.json({ success: false, user: null });
+            }
+
+            const user = await usersCollection.findOne(
+                { _id: new ObjectId(decoded.id) },
+                { projection: { password: 0 } }
+            );
+
+            if (!user) {
+                return res.json({ success: false, user: null });
+            }
+
+            res.json({ success: true, user });
+        });
+    } catch (error) {
+        console.error("ME endpoint error:", error);
+        res.json({ success: false, user: null });
+    }
+});
 
 // ====================== DATABASE CONNECTION ======================
 const uri = process.env.MONGODB_URI;
