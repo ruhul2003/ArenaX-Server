@@ -14,7 +14,6 @@ const jwtSecret = process.env.JWT_SECRET || 'your_fallback_secret_key_123';
 // ====================== MIDDLEWARES ======================
 const allowedOrigins = [
     'http://localhost:3000',
-    'https://arenax-cyan.vercel.app',
     'https://arena-x-xi.vercel.app'
 ];
 
@@ -135,8 +134,8 @@ app.post('/api/auth/login', async (req, res) => {
 
         res.cookie('token', token, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+            secure: true,
+            sameSite:'none',
             maxAge: 7 * 24 * 60 * 60 * 1000 ,
             path: '/'
         });
@@ -184,13 +183,12 @@ app.post('/api/auth/signup', async (req, res) => {
 app.post('/api/auth/logout', (req, res) => {
     res.clearCookie('token', { 
         httpOnly: true, 
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+        secure: true,
+        sameSite:'none'
     });
     res.json({ success: true, message: "Logged out successfully" });
 });
 
-// Check current user
 // Check current user
 app.get('/api/auth/me', async (req, res) => {
     const token = req.cookies.token;
