@@ -15,6 +15,8 @@ const jwtSecret = process.env.JWT_SECRET || "your_fallback_secret_key_123";
 const allowedOrigins = [
   "http://localhost:3000",
   "https://arena-x-xi.vercel.app",
+  // jodi custom domain add korte chan:
+  // "https://yourdomain.com"
 ];
 
 app.use(
@@ -29,6 +31,7 @@ app.use(
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    exposedHeaders: ["Set-Cookie"], // ← এটাই আসল মিসিং জিনিস
   }),
 );
 
@@ -131,56 +134,64 @@ const verifyToken = (req, res, next) => {
 // ====================== AUTH ROUTES ======================
 
 // Login
-app.post('/api/auth/login', async (req, res) => {
-    try {
-        const { usersCollection } = req.dbCollections;
-        const { email, password } = req.body;
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { usersCollection } = req.dbCollections;
+    const { email, password } = req.body;
 
-        const user = await usersCollection.findOne({ 
-            email: email.toLowerCase().trim() 
-        });
+    const user = await usersCollection.findOne({
+      email: email.toLowerCase().trim(),
+    });
 
-        if (!user || !user.password || !(await bcrypt.compare(password, user.password))) {
-            return res.status(401).json({ 
-                success: false, 
-                message: "Invalid email or password" 
-            });
-        }
-
-        const token = jwt.sign({ 
-            id: user._id, 
-            email: user.email 
-        }, jwtSecret, { expiresIn: '7d' });
-
-        // ==================== COOKIE SET ====================
-        res.cookie('token', token, {
-            httpOnly: true,
-            secure: true,
-            sameSite: 'none',
-            maxAge: 7 * 24 * 60 * 60 * 1000,
-            path: '/'
-        });
-        // ====================================================
-
-        console.log("✅ Cookie set successfully for user:", user.email);
-
-        res.json({ 
-            success: true, 
-            message: "Login successful",
-            user: { 
-                name: user.name, 
-                email: user.email, 
-                role: user.role 
-            }
-        });
-
-    } catch (err) {
-        console.error("Login error:", err);
-        res.status(500).json({ 
-            success: false, 
-            message: "Server error" 
-        });
+    if (
+      !user ||
+      !user.password ||
+      !(await bcrypt.compare(password, user.password))
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password",
+      });
     }
+
+    const token = jwt.sign(
+      {
+        id: user._id,
+        email: user.email,
+      },
+      jwtSecret,
+      { expiresIn: "7d" },
+    );
+
+    // ==================== COOKIE SET ====================
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production", 
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      path: "/",
+      domain: process.env.NODE_ENV === "production" ? undefined : undefined, // extra safe
+    });
+    // ====================================================
+
+    console.log("✅ Cookie set successfully for user:", user.email);
+
+    res.json({
+      success: true,
+      message: "Login successful",
+      user: {
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
+    });
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
 });
 
 // Signup
@@ -295,19 +306,15 @@ app.post("/api/facilities", verifyToken, async (req, res) => {
     };
 
     const result = await facilitiesCollection.insertOne(newFacility);
-    res
-      .status(201)
-      .json({
-        success: true,
-        message: "Facility added successfully!",
-        facilityId: result.insertedId,
-      });
+    res.status(201).json({
+      success: true,
+      message: "Facility added successfully!",
+      facilityId: result.insertedId,
+    });
   } catch (err) {
-    res
-      .status(500)
-      .json({
-        message: "Server encountered an error creating the facility listing.",
-      });
+    res.status(500).json({
+      message: "Server encountered an error creating the facility listing.",
+    });
   }
 });
 
@@ -445,13 +452,11 @@ app.post(["/api/booking", "/api/bookings"], verifyToken, async (req, res) => {
     };
 
     const result = await bookingsCollection.insertOne(newBooking);
-    res
-      .status(201)
-      .json({
-        success: true,
-        message: "Reservation logged successfully!",
-        bookingId: result.insertedId,
-      });
+    res.status(201).json({
+      success: true,
+      message: "Reservation logged successfully!",
+      bookingId: result.insertedId,
+    });
   } catch (err) {
     res
       .status(500)
