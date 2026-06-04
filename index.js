@@ -2,21 +2,17 @@ const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const bcrypt = require("bcrypt");
-const jwt = require("jsonwebtoken");
 const cookieParser = require("cookie-parser");
 require("dotenv").config();
 
 const app = express();
 const port = process.env.PORT || 5000;
-const jwtSecret = process.env.JWT_SECRET || "your_fallback_secret_key_123";
 
 // ====================== MIDDLEWARES ======================
-// ====================== MIDDLEWARES ======================
+
 const allowedOrigins = [
   "http://localhost:3000",
   "https://arena-x-xi.vercel.app",
-  // jodi custom domain add korte chan:
-  // "https://yourdomain.com"
 ];
 
 app.use(
@@ -29,9 +25,10 @@ app.use(
       }
     },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    // Add "PATCH" right here 👇
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-    exposedHeaders: ["Set-Cookie"], // ← এটাই আসল মিসিং জিনিস
+    exposedHeaders: ["Set-Cookie"], 
   }),
 );
 
@@ -40,41 +37,6 @@ app.use(cookieParser());
 
 // Apply DB middleware only to /api routes
 app.use("/api", connectDatabaseMiddleware);
-
-// ====================== AUTH ROUTES ======================
-
-// Check current user - FIXED
-app.get("/api/auth/me", async (req, res) => {
-  try {
-    const token = req.cookies.token;
-    if (!token) {
-      return res.json({ success: false, user: null });
-    }
-
-    const { usersCollection } = req.dbCollections;
-
-    jwt.verify(token, jwtSecret, async (err, decoded) => {
-      if (err) {
-        console.error("JWT verify error:", err);
-        return res.json({ success: false, user: null });
-      }
-
-      const user = await usersCollection.findOne(
-        { _id: new ObjectId(decoded.id) },
-        { projection: { password: 0 } },
-      );
-
-      if (!user) {
-        return res.json({ success: false, user: null });
-      }
-
-      res.json({ success: true, user });
-    });
-  } catch (error) {
-    console.error("ME endpoint error:", error);
-    res.json({ success: false, user: null });
-  }
-});
 
 // ====================== DATABASE CONNECTION ======================
 const uri = process.env.MONGODB_URI;
@@ -111,26 +73,6 @@ async function connectDatabaseMiddleware(req, res, next) {
   }
 }
 
-app.use("/api", connectDatabaseMiddleware);
-
-// ====================== AUTH MIDDLEWARE ======================
-const verifyToken = (req, res, next) => {
-  const token = req.cookies.token;
-  if (!token)
-    return res
-      .status(401)
-      .json({ message: "Access denied. Please log in first." });
-
-  jwt.verify(token, jwtSecret, (err, decoded) => {
-    if (err)
-      return res
-        .status(403)
-        .json({ message: "Session expired. Please log in again." });
-    req.user = decoded;
-    next();
-  });
-};
-
 // ====================== AUTH ROUTES ======================
 
 // Login
@@ -154,27 +96,7 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    const token = jwt.sign(
-      {
-        id: user._id,
-        email: user.email,
-      },
-      jwtSecret,
-      { expiresIn: "7d" },
-    );
-
-    // ==================== COOKIE SET ====================
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production", 
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: "/",
-      domain: process.env.NODE_ENV === "production" ? undefined : undefined, // extra safe
-    });
-    // ====================================================
-
-    console.log("✅ Cookie set successfully for user:", user.email);
+    console.log("✅ User authenticated successfully:", user.email);
 
     res.json({
       success: true,
@@ -229,44 +151,7 @@ app.post("/api/auth/signup", async (req, res) => {
 
 // Logout
 app.post("/api/auth/logout", (req, res) => {
-  res.clearCookie("token", {
-    httpOnly: true,
-    secure: true,
-    sameSite: "none",
-  });
   res.json({ success: true, message: "Logged out successfully" });
-});
-
-// Check current user
-app.get("/api/auth/me", async (req, res) => {
-  const token = req.cookies.token;
-  if (!token) {
-    return res.json({ success: false, user: null });
-  }
-
-  try {
-    const { usersCollection } = req.dbCollections;
-
-    jwt.verify(token, jwtSecret, async (err, decoded) => {
-      if (err) {
-        return res.json({ success: false, user: null });
-      }
-
-      const user = await usersCollection.findOne(
-        { _id: new ObjectId(decoded.id) },
-        { projection: { password: 0 } },
-      );
-
-      if (!user) {
-        return res.json({ success: false, user: null });
-      }
-
-      res.json({ success: true, user });
-    });
-  } catch (error) {
-    console.error("ME endpoint error:", error);
-    res.json({ success: false, user: null });
-  }
 });
 
 // ====================== FACILITIES ROUTES ======================
@@ -280,9 +165,10 @@ app.get("/api/facilities", async (req, res) => {
   }
 });
 
-app.post("/api/facilities", verifyToken, async (req, res) => {
+app.post("/api/facilities", async (req, res) => {
   try {
     const { facilitiesCollection } = req.dbCollections;
+    
     const {
       name,
       facility_type,
@@ -291,7 +177,18 @@ app.post("/api/facilities", verifyToken, async (req, res) => {
       capacity,
       description,
       image,
+      owner_email,   // ← Frontend থেকে আসবে
+      email          // ← Backup (যদি কোনো কারণে owner_email না আসে)
     } = req.body;
+
+    // Safety Check
+    const finalOwnerEmail = owner_email || email;
+    if (!finalOwnerEmail) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Owner email is required" 
+      });
+    }
 
     const newFacility = {
       name,
@@ -301,18 +198,23 @@ app.post("/api/facilities", verifyToken, async (req, res) => {
       capacity: parseInt(capacity, 10) || 0,
       description,
       image,
-      owner_email: req.user.email,
+      owner_email: finalOwnerEmail,   // ← এটাই গুরুত্বপূর্ণ
       createdAt: new Date(),
     };
 
     const result = await facilitiesCollection.insertOne(newFacility);
+
+    console.log(`✅ New facility created by: ${finalOwnerEmail}, ID: ${result.insertedId}`);
+
     res.status(201).json({
       success: true,
       message: "Facility added successfully!",
       facilityId: result.insertedId,
     });
   } catch (err) {
+    console.error("Facility creation error:", err);
     res.status(500).json({
+      success: false,
       message: "Server encountered an error creating the facility listing.",
     });
   }
@@ -342,7 +244,7 @@ app.get("/api/facility/:id", async (req, res) => {
   }
 });
 
-app.put("/api/facility/:id", verifyToken, async (req, res) => {
+app.put("/api/facility/:id", async (req, res) => {
   try {
     const { facilitiesCollection } = req.dbCollections;
     const { id } = req.params;
@@ -380,7 +282,8 @@ app.put("/api/facility/:id", verifyToken, async (req, res) => {
   }
 });
 
-app.delete("/api/facilities/:id", verifyToken, async (req, res) => {
+// Backend: index.js এর ডিলিট রাউটটি পরিবর্তন করুন
+app.delete("/api/facility/:id", async (req, res) => {
   try {
     const { facilitiesCollection } = req.dbCollections;
     const { id } = req.params;
@@ -392,26 +295,30 @@ app.delete("/api/facilities/:id", verifyToken, async (req, res) => {
   }
 });
 
+// Backend: index.js এর /api/my-facilities রাউটটি এভাবে পরিবর্তন করুন
 app.get("/api/my-facilities", async (req, res) => {
-  const token = req.cookies.token;
-  if (!token) return res.status(401).json({ message: "Unauthorized" });
-
   try {
     const { facilitiesCollection } = req.dbCollections;
-    jwt.verify(token, jwtSecret, async (err, decoded) => {
-      if (err) return res.status(401).json({ message: "Unauthorized" });
-      const result = await facilitiesCollection
-        .find({ owner_email: decoded.email })
-        .toArray();
-      res.json(result);
-    });
+    const email = req.query.email;
+    
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Missing email parameter." });
+    }
+
+    const result = await facilitiesCollection
+      .find({ owner_email: email })
+      .toArray();
+
+    // success এবং data কি দিয়ে অবজেক্ট পাঠান
+    res.status(200).json({ success: true, data: result });
   } catch (error) {
-    res.status(500).json({ message: "Failed to access user details." });
+    console.error("Error fetching user facilities:", error);
+    res.status(500).json({ success: false, message: "Failed to access user details." });
   }
 });
 
 // ====================== BOOKINGS ROUTES ======================
-app.post(["/api/booking", "/api/bookings"], verifyToken, async (req, res) => {
+app.post(["/api/booking", "/api/bookings"], async (req, res) => {
   try {
     const { facilitiesCollection, bookingsCollection } = req.dbCollections;
 
@@ -421,8 +328,9 @@ app.post(["/api/booking", "/api/bookings"], verifyToken, async (req, res) => {
     const total_price = req.body.totalBill || req.body.total_price;
     const facility_name = req.body.facility_name;
     const hours = req.body.hours || 2;
+    const userEmail = req.body.email; // Expecting user email explicitly passed from front-end
 
-    if (!facility_id || !booking_date || !time_slot) {
+    if (!facility_id || !booking_date || !time_slot || !userEmail) {
       return res
         .status(400)
         .json({ message: "Missing required booking payload items." });
@@ -446,7 +354,7 @@ app.post(["/api/booking", "/api/bookings"], verifyToken, async (req, res) => {
       hours: parseInt(hours, 10) || 1,
       amountPaid:
         total_price || facilityData?.price_per_hour * parseInt(hours, 10) || 0,
-      userEmail: req.user.email,
+      userEmail: userEmail,
       status: "PENDING",
       createdAt: new Date(),
     };
@@ -464,11 +372,17 @@ app.post(["/api/booking", "/api/bookings"], verifyToken, async (req, res) => {
   }
 });
 
-app.get("/api/my-bookings", verifyToken, async (req, res) => {
+app.get("/api/my-bookings", async (req, res) => {
   try {
     const { bookingsCollection } = req.dbCollections;
+    const email = req.query.email; // Client should pass email via query string: ?email=user@example.com
+
+    if (!email) {
+      return res.status(400).json({ message: "Missing email parameter." });
+    }
+
     const userBookings = await bookingsCollection
-      .find({ userEmail: req.user.email })
+      .find({ userEmail: email })
       .sort({ createdAt: -1 })
       .toArray();
     res.json(userBookings);
@@ -477,10 +391,12 @@ app.get("/api/my-bookings", verifyToken, async (req, res) => {
   }
 });
 
-app.patch("/api/bookings/:id/cancel", verifyToken, async (req, res) => {
+app.patch("/api/bookings/:id/cancel", async (req, res) => {
   try {
     const { bookingsCollection } = req.dbCollections;
     const { id } = req.params;
+    const { email } = req.body; // Expecting email of user canceling to check ownership
+
     if (!ObjectId.isValid(id))
       return res.status(400).json({ message: "Invalid booking ID template." });
 
@@ -491,7 +407,8 @@ app.patch("/api/bookings/:id/cancel", verifyToken, async (req, res) => {
       return res
         .status(404)
         .json({ message: "Booking record could not be found." });
-    if (targetBooking.userEmail !== req.user.email)
+        
+    if (email && targetBooking.userEmail !== email)
       return res.status(403).json({ message: "Forbidden." });
 
     await bookingsCollection.updateOne(
