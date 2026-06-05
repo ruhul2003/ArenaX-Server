@@ -48,6 +48,20 @@ const client = new MongoClient(uri, {
   },
 });
 
+
+const verifyToken = (req, res, next) => {
+  const authHeader = req?.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+  const token = authHeader.split(" ")[1]; 
+  if (!token) {
+    return res.status(401).json({ message: "Unauthorized" });
+  } 
+  next();
+
+}
+
 let cachedDb = null;
 let cachedCollections = {};
 
@@ -220,7 +234,11 @@ app.post("/api/facilities", async (req, res) => {
   }
 });
 
-app.get("/api/facility/:id", async (req, res) => {
+app.get("/api/facility/:id",verifyToken, async (req, res, next) => {
+  const header = req.headers.authorization
+
+
+
   try {
     const { facilitiesCollection } = req.dbCollections;
     const { id } = req.params;
