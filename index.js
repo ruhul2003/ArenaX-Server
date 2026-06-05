@@ -375,51 +375,66 @@ app.post(["/api/booking", "/api/bookings"], async (req, res) => {
 app.get("/api/my-bookings", async (req, res) => {
   try {
     const { bookingsCollection } = req.dbCollections;
-    const email = req.query.email; // Client should pass email via query string: ?email=user@example.com
+    const email = req.query.email;
 
     if (!email) {
       return res.status(400).json({ message: "Missing email parameter." });
     }
 
     const userBookings = await bookingsCollection
-      .find({ userEmail: email })
+      .find({ 
+        userEmail: email,
+        status: { $ne: "CANCELLED" }   // ← Cancelled বাদ দিয়ে শুধু Active নিয়ে আসবে
+      })
       .sort({ createdAt: -1 })
       .toArray();
+
     res.json(userBookings);
   } catch (err) {
+    console.error("Error fetching bookings:", err);
     res.status(500).json({ message: "Could not fetch user reservations." });
   }
 });
 
+// ====================== CANCEL BOOKING ======================
 app.patch("/api/bookings/:id/cancel", async (req, res) => {
   try {
     const { bookingsCollection } = req.dbCollections;
     const { id } = req.params;
-    const { email } = req.body; // Expecting email of user canceling to check ownership
+    const { email } = req.body;   // User email for ownership check
 
-    if (!ObjectId.isValid(id))
-      return res.status(400).json({ message: "Invalid booking ID template." });
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid booking ID." });
+    }
 
     const targetBooking = await bookingsCollection.findOne({
       _id: new ObjectId(id),
     });
-    if (!targetBooking)
-      return res
-        .status(404)
-        .json({ message: "Booking record could not be found." });
-        
-    if (email && targetBooking.userEmail !== email)
-      return res.status(403).json({ message: "Forbidden." });
+
+    if (!targetBooking) {
+      return res.status(404).json({ success: false, message: "Booking not found." });
+    }
+
+    // Ownership check (important for security)
+    if (email && targetBooking.userEmail !== email) {
+      return res.status(403).json({ success: false, message: "You can only cancel your own bookings." });
+    }
 
     await bookingsCollection.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { status: "CANCELLED" } },
+      { $set: { status: "CANCELLED", cancelledAt: new Date() } }
     );
-    res.json({ success: true, message: "Reservation cancelled successfully." });
+
+    res.json({ 
+      success: true, 
+      message: "Booking cancelled successfully." 
+    });
   } catch (err) {
-    res
-      .status(500)
-      .json({ message: "Server error executing cancellation requests." });
+    console.error("Cancel booking error:", err);
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error while cancelling booking." 
+    });
   }
 });
 
