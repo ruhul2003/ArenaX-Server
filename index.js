@@ -27,7 +27,6 @@ app.use(
       }
     },
     credentials: true,
-    // Add "PATCH" right here 👇
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     exposedHeaders: ["Set-Cookie"], 
@@ -37,7 +36,6 @@ app.use(
 app.use(express.json());
 app.use(cookieParser());
 
-// Apply DB middleware only to /api routes
 app.use("/api", connectDatabaseMiddleware);
 
 // ====================== DATABASE CONNECTION ======================
@@ -90,7 +88,7 @@ async function connectDatabaseMiddleware(req, res, next) {
         usersCollection: cachedDb.collection("Users"),
         bookingsCollection: cachedDb.collection("Bookings"),
       };
-      console.log("✅ Connected to MongoDB Atlas successfully.");
+      console.log("Connected to MongoDB Atlas successfully.");
     }
 
     req.dbCollections = cachedCollections;
@@ -124,7 +122,7 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    console.log("✅ User authenticated successfully:", user.email);
+    console.log("User authenticated successfully:", user.email);
 
     res.json({
       success: true,
@@ -205,11 +203,10 @@ app.post("/api/facilities", async (req, res) => {
       capacity,
       description,
       image,
-      owner_email,   // ← Frontend থেকে আসবে
-      email          // ← Backup (যদি কোনো কারণে owner_email না আসে)
+      owner_email,  
+      email       
     } = req.body;
 
-    // Safety Check
     const finalOwnerEmail = owner_email || email;
     if (!finalOwnerEmail) {
       return res.status(400).json({ 
@@ -226,13 +223,13 @@ app.post("/api/facilities", async (req, res) => {
       capacity: parseInt(capacity, 10) || 0,
       description,
       image,
-      owner_email: finalOwnerEmail,   // ← এটাই গুরুত্বপূর্ণ
+      owner_email: finalOwnerEmail, 
       createdAt: new Date(),
     };
 
     const result = await facilitiesCollection.insertOne(newFacility);
 
-    console.log(`✅ New facility created by: ${finalOwnerEmail}, ID: ${result.insertedId}`);
+    console.log(`New facility created by: ${finalOwnerEmail}, ID: ${result.insertedId}`);
 
     res.status(201).json({
       success: true,
@@ -314,7 +311,6 @@ app.put("/api/facility/:id", async (req, res) => {
   }
 });
 
-// Backend: index.js এর ডিলিট রাউটটি পরিবর্তন করুন
 app.delete("/api/facility/:id", async (req, res) => {
   try {
     const { facilitiesCollection } = req.dbCollections;
@@ -327,7 +323,6 @@ app.delete("/api/facility/:id", async (req, res) => {
   }
 });
 
-// Backend: index.js এর /api/my-facilities রাউটটি এভাবে পরিবর্তন করুন
 app.get("/api/my-facilities", async (req, res) => {
   try {
     const { facilitiesCollection } = req.dbCollections;
@@ -341,7 +336,6 @@ app.get("/api/my-facilities", async (req, res) => {
       .find({ owner_email: email })
       .toArray();
 
-    // success এবং data কি দিয়ে অবজেক্ট পাঠান
     res.status(200).json({ success: true, data: result });
   } catch (error) {
     console.error("Error fetching user facilities:", error);
@@ -360,7 +354,7 @@ app.post(["/api/booking", "/api/bookings"], async (req, res) => {
     const total_price = req.body.totalBill || req.body.total_price;
     const facility_name = req.body.facility_name;
     const hours = req.body.hours || 2;
-    const userEmail = req.body.email; // Expecting user email explicitly passed from front-end
+    const userEmail = req.body.email; 
 
     if (!facility_id || !booking_date || !time_slot || !userEmail) {
       return res
@@ -416,7 +410,7 @@ app.get("/api/my-bookings", async (req, res) => {
     const userBookings = await bookingsCollection
       .find({ 
         userEmail: email,
-        status: { $ne: "CANCELLED" }   // ← Cancelled বাদ দিয়ে শুধু Active নিয়ে আসবে
+        status: { $ne: "CANCELLED" } 
       })
       .sort({ createdAt: -1 })
       .toArray();
@@ -433,7 +427,7 @@ app.patch("/api/bookings/:id/cancel", async (req, res) => {
   try {
     const { bookingsCollection } = req.dbCollections;
     const { id } = req.params;
-    const { email } = req.body;   // User email for ownership check
+    const { email } = req.body; 
 
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({ success: false, message: "Invalid booking ID." });
@@ -447,7 +441,6 @@ app.patch("/api/bookings/:id/cancel", async (req, res) => {
       return res.status(404).json({ success: false, message: "Booking not found." });
     }
 
-    // Ownership check (important for security)
     if (email && targetBooking.userEmail !== email) {
       return res.status(403).json({ success: false, message: "You can only cancel your own bookings." });
     }
@@ -475,9 +468,8 @@ app.get("/", (req, res) => {
   res.status(200).json({ status: "healthy", service: "ArenaX Live Engine" });
 });
 
-// Start Server (for local development)
 if (process.env.NODE_ENV !== "production") {
-  app.listen(port, () => console.log(`🚀 Server running on port ${port}`));
+  app.listen(port, () => console.log(`Server running on port ${port}`));
 }
 
 module.exports = app;
