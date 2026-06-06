@@ -4,6 +4,8 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const bcrypt = require("bcrypt");
 const cookieParser = require("cookie-parser");
 require("dotenv").config();
+const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
+
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -49,7 +51,13 @@ const client = new MongoClient(uri, {
 });
 
 
-const verifyToken = (req, res, next) => {
+const JWKS = createRemoteJWKSet(
+  new URL("http://localhost:3000/api/auth/jwks")
+)
+
+// ====================== AUTHENTICATION MIDDLEWARE ======================
+
+const verifyToken =async (req, res, next) => {
   const authHeader = req?.headers.authorization;
   if (!authHeader) {
     return res.status(401).json({ message: "Unauthorized" });
@@ -58,9 +66,15 @@ const verifyToken = (req, res, next) => {
   if (!token) {
     return res.status(401).json({ message: "Unauthorized" });
   } 
-  next();
 
-}
+ try{
+    const payload = await jwtVerify(token, JWKS);
+  console.log("Token verified successfully. Payload:", payload);
+  next();
+ } catch (error) {
+    return res.status(403).json({ message: "Invalid token"});
+ }
+};
 
 let cachedDb = null;
 let cachedCollections = {};
