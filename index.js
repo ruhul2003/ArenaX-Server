@@ -50,7 +50,7 @@ const client = new MongoClient(uri, {
 
 
 const JWKS = createRemoteJWKSet(
-  new URL("https://arena-x-server.vercel.app/api/auth/jwks")
+  new URL("https://arena-x-xi.vercel.app/api/auth/jwks")
 )
 
 // ====================== AUTHENTICATION MIDDLEWARE ======================
