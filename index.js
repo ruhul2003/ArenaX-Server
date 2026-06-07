@@ -273,7 +273,7 @@ app.get("/api/facility/:id",verifyToken, async (req, res, next) => {
   }
 });
 
-app.put("/api/facility/:id", async (req, res) => {
+app.put("/api/facility/:id", verifyToken, async (req, res) => {
   try {
     const { facilitiesCollection } = req.dbCollections;
     const { id } = req.params;
@@ -311,7 +311,7 @@ app.put("/api/facility/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/facility/:id", async (req, res) => {
+app.delete("/api/facility/:id", verifyToken, async (req, res) => {
   try {
     const { facilitiesCollection } = req.dbCollections;
     const { id } = req.params;
