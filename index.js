@@ -65,13 +65,16 @@ const verifyToken =async (req, res, next) => {
     return res.status(401).json({ message: "Unauthorized" });
   } 
 
- try{
-    const payload = await jwtVerify(token, JWKS);
+ try {
+  const payload = await jwtVerify(token, JWKS);
   console.log("Token verified successfully. Payload:", payload);
   next();
- } catch (error) {
-    return res.status(403).json({ message: "Invalid token"});
- }
+} catch (error) {
+  // Add this line to see exactly why jose is rejecting it!
+  console.error("JWT Verification failed detail:", error.message); 
+  
+  return res.status(403).json({ message: "Invalid token" });
+}
 };
 
 let cachedDb = null;
