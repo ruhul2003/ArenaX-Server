@@ -55,27 +55,7 @@ const JWKS = createRemoteJWKSet(
 
 // ====================== AUTHENTICATION MIDDLEWARE ======================
 
-// const verifyToken =async (req, res, next) => {
-//   const authHeader = req?.headers.authorization;
-//   if (!authHeader) {
-//     return res.status(401).json({ message: "Unauthorized" });
-//   }
-//   const token = authHeader.split(" ")[1]; 
-//   if (!token) {
-//     return res.status(401).json({ message: "Unauthorized" });
-//   } 
 
-//  try {
-//   const payload = await jwtVerify(token, JWKS);
-//   console.log("Token verified successfully. Payload:", payload);
-//   next();
-// } catch (error) {
-//   // Add this line to see exactly why jose is rejecting it!
-//   console.error("JWT Verification failed detail:", error.message); 
-  
-//   return res.status(403).json({ message: "Invalid token" });
-// }
-// };
 
 const verifyToken = async (req, res, next) => {
     let authHeader = req?.headers?.authorization;
@@ -369,12 +349,10 @@ app.delete("/api/facility/:id", verifyToken, async (req, res) => {
     const { facilitiesCollection } = req.dbCollections;
     const { id } = req.params;
     
-    // ID ভ্যালিডেশন চেক
     if (!id) {
       return res.status(400).json({ success: false, message: "Facility ID is required." });
     }
 
-    // ObjectId ফরম্যাট চেক করে কুয়েরি তৈরি
     let query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
     
     const deleteResult = await facilitiesCollection.deleteOne(query);
